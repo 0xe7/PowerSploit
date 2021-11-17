@@ -24441,6 +24441,88 @@ DateTime
     }
 }
 
+function Get-RegistryUserEnum {
+<#
+.SYNOPSIS
+
+Enumerate users using remote registry.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Enumerate users using remote registry.
+
+.PARAMETER ComputerName
+
+Computer to check.
+
+.PARAMETER Check
+
+Switch. Just check if connecting to the remote registry works.
+
+.EXAMPLE
+
+Get-LogoffTime -LogonHours $LogonHours -LogonTime $(Get-Date)
+
+.INPUTS
+
+PSObject
+
+.OUTPUTS
+
+DateTime
+#>
+
+    [CmdletBinding(SupportsShouldProcess=$True,
+        ConfirmImpact='Medium')]
+    Param
+    ( 
+        [parameter(Position=0, ValueFromPipeline=$True, ValueFromPipelineByPropertyName=$True)]
+        [Alias('DNSHostName', 'Name', 'Server')]
+        [String[]]
+        $ComputerName = '.',
+
+        [Switch]
+        $Check
+    )
+    Begin {
+    }
+    Process {
+        Foreach ($Computer in $ComputerName) {
+            if (Test-Connection $computer -Count 2 -Quiet) {
+                $reg = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey('Users', $Computer)
+                $subkeys = $reg.GetSubKeyNames() | ?{$_ -notmatch '.DEFAULT' -and $_ -notmatch '_Classes'}
+                if ($PSBoundParameters['Check'] -and $subkeys.Length -gt 0) {
+                    $Computer
+                } elseif ($subkeys.Length -gt 0) {
+                $users = @()
+                foreach ($subkey in $subkeys) {
+                    $user = New-Object psobject
+                    $user | Add-Member -Name SID -MemberType NoteProperty -Value $subkey
+                    $user | Add-Member -Name Name -MemberType NoteProperty -Value (ConvertFrom-SID $subkey)
+                    $users += ,$user
+                }
+                $Obj = New-Object psobject
+                $Obj | Add-Member -Name Computer -MemberType NoteProperty -Value $Computer
+                $Obj | Add-Member -Name Users -MemberType NoteProperty -Value $users
+                $Obj
+                } else {
+                    Write-Warning "$Computer connected but did not return subkeys"
+                }
+            }
+            else {
+                Write-Error "$Computer not reachable"
+            }
+        }
+    }
+    End {
+        #[Microsoft.Win32.RegistryHive]::Users
+    }
+}
+
 
 
 ########################################################
@@ -24483,245 +24565,246 @@ $GroupTypeEnum = psenum $Mod PowerView.GroupTypeEnum UInt32 @{
 } -Bitfield
 
 # used to parse the 'userAccountControl' property for users/groups
-$UACEnum = psenum $Mod PowerView.UACEnum UInt32 @{
-    SCRIPT                          =   1
-    ACCOUNTDISABLE                  =   2
-    HOMEDIR_REQUIRED                =   8
-    LOCKOUT                         =   16
-    PASSWD_NOTREQD                  =   32
-    PASSWD_CANT_CHANGE              =   64
-    ENCRYPTED_TEXT_PWD_ALLOWED      =   128
-    TEMP_DUPLICATE_ACCOUNT          =   256
-    NORMAL_ACCOUNT                  =   512
-    INTERDOMAIN_TRUST_ACCOUNT       =   2048
-    WORKSTATION_TRUST_ACCOUNT       =   4096
-    SERVER_TRUST_ACCOUNT            =   8192
-    DONT_EXPIRE_PASSWORD            =   65536
-    MNS_LOGON_ACCOUNT               =   131072
-    SMARTCARD_REQUIRED              =   262144
-    TRUSTED_FOR_DELEGATION          =   524288
-    NOT_DELEGATED                   =   1048576
-    USE_DES_KEY_ONLY                =   2097152
-    DONT_REQ_PREAUTH                =   4194304
-    PASSWORD_EXPIRED                =   8388608
-    TRUSTED_TO_AUTH_FOR_DELEGATION  =   16777216
-    PARTIAL_SECRETS_ACCOUNT         =   67108864
-} -Bitfield
+	$UACEnum = psenum $Mod PowerView.UACEnum UInt32 @{
+	    SCRIPT                          =   1
+	    ACCOUNTDISABLE                  =   2
+	    HOMEDIR_REQUIRED                =   8
+	    LOCKOUT                         =   16
+	    PASSWD_NOTREQD                  =   32
+	    PASSWD_CANT_CHANGE              =   64
+	    ENCRYPTED_TEXT_PWD_ALLOWED      =   128
+	    TEMP_DUPLICATE_ACCOUNT          =   256
+	    NORMAL_ACCOUNT                  =   512
+	    INTERDOMAIN_TRUST_ACCOUNT       =   2048
+	    WORKSTATION_TRUST_ACCOUNT       =   4096
+	    SERVER_TRUST_ACCOUNT            =   8192
+	    DONT_EXPIRE_PASSWORD            =   65536
+	    MNS_LOGON_ACCOUNT               =   131072
+	    SMARTCARD_REQUIRED              =   262144
+	    TRUSTED_FOR_DELEGATION          =   524288
+	    NOT_DELEGATED                   =   1048576
+	    USE_DES_KEY_ONLY                =   2097152
+	    DONT_REQ_PREAUTH                =   4194304
+	    PASSWORD_EXPIRED                =   8388608
+	    TRUSTED_TO_AUTH_FOR_DELEGATION  =   16777216
+            NO_AUTH_DATA_REQUIRED           =   33554432
+	    PARTIAL_SECRETS_ACCOUNT         =   67108864
+	} -Bitfield
 
-# enum used by $WTS_SESSION_INFO_1 below
-$WTSConnectState = psenum $Mod WTS_CONNECTSTATE_CLASS UInt16 @{
-    Active       =    0
-    Connected    =    1
-    ConnectQuery =    2
-    Shadow       =    3
-    Disconnected =    4
-    Idle         =    5
-    Listen       =    6
-    Reset        =    7
-    Down         =    8
-    Init         =    9
-}
+	# enum used by $WTS_SESSION_INFO_1 below
+	$WTSConnectState = psenum $Mod WTS_CONNECTSTATE_CLASS UInt16 @{
+	    Active       =    0
+	    Connected    =    1
+	    ConnectQuery =    2
+	    Shadow       =    3
+	    Disconnected =    4
+	    Idle         =    5
+	    Listen       =    6
+	    Reset        =    7
+	    Down         =    8
+	    Init         =    9
+	}
 
-# the WTSEnumerateSessionsEx result structure
-$WTS_SESSION_INFO_1 = struct $Mod PowerView.RDPSessionInfo @{
-    ExecEnvId = field 0 UInt32
-    State = field 1 $WTSConnectState
-    SessionId = field 2 UInt32
-    pSessionName = field 3 String -MarshalAs @('LPWStr')
-    pHostName = field 4 String -MarshalAs @('LPWStr')
-    pUserName = field 5 String -MarshalAs @('LPWStr')
-    pDomainName = field 6 String -MarshalAs @('LPWStr')
-    pFarmName = field 7 String -MarshalAs @('LPWStr')
-}
+	# the WTSEnumerateSessionsEx result structure
+	$WTS_SESSION_INFO_1 = struct $Mod PowerView.RDPSessionInfo @{
+	    ExecEnvId = field 0 UInt32
+	    State = field 1 $WTSConnectState
+	    SessionId = field 2 UInt32
+	    pSessionName = field 3 String -MarshalAs @('LPWStr')
+	    pHostName = field 4 String -MarshalAs @('LPWStr')
+	    pUserName = field 5 String -MarshalAs @('LPWStr')
+	    pDomainName = field 6 String -MarshalAs @('LPWStr')
+	    pFarmName = field 7 String -MarshalAs @('LPWStr')
+	}
 
-# the particular WTSQuerySessionInformation result structure
-$WTS_CLIENT_ADDRESS = struct $mod WTS_CLIENT_ADDRESS @{
-    AddressFamily = field 0 UInt32
-    Address = field 1 Byte[] -MarshalAs @('ByValArray', 20)
-}
+	# the particular WTSQuerySessionInformation result structure
+	$WTS_CLIENT_ADDRESS = struct $mod WTS_CLIENT_ADDRESS @{
+	    AddressFamily = field 0 UInt32
+	    Address = field 1 Byte[] -MarshalAs @('ByValArray', 20)
+	}
 
-# the NetShareEnum result structure
-$SHARE_INFO_1 = struct $Mod PowerView.ShareInfo @{
-    Name = field 0 String -MarshalAs @('LPWStr')
-    Type = field 1 UInt32
-    Remark = field 2 String -MarshalAs @('LPWStr')
-}
+	# the NetShareEnum result structure
+	$SHARE_INFO_1 = struct $Mod PowerView.ShareInfo @{
+	    Name = field 0 String -MarshalAs @('LPWStr')
+	    Type = field 1 UInt32
+	    Remark = field 2 String -MarshalAs @('LPWStr')
+	}
 
-# the NetWkstaUserEnum result structure
-$WKSTA_USER_INFO_1 = struct $Mod PowerView.LoggedOnUserInfo @{
-    UserName = field 0 String -MarshalAs @('LPWStr')
-    LogonDomain = field 1 String -MarshalAs @('LPWStr')
-    AuthDomains = field 2 String -MarshalAs @('LPWStr')
-    LogonServer = field 3 String -MarshalAs @('LPWStr')
-}
+	# the NetWkstaUserEnum result structure
+	$WKSTA_USER_INFO_1 = struct $Mod PowerView.LoggedOnUserInfo @{
+	    UserName = field 0 String -MarshalAs @('LPWStr')
+	    LogonDomain = field 1 String -MarshalAs @('LPWStr')
+	    AuthDomains = field 2 String -MarshalAs @('LPWStr')
+	    LogonServer = field 3 String -MarshalAs @('LPWStr')
+	}
 
-# the NetSessionEnum result structure
-$SESSION_INFO_10 = struct $Mod PowerView.SessionInfo @{
-    CName = field 0 String -MarshalAs @('LPWStr')
-    UserName = field 1 String -MarshalAs @('LPWStr')
-    Time = field 2 UInt32
-    IdleTime = field 3 UInt32
-}
+	# the NetSessionEnum result structure
+	$SESSION_INFO_10 = struct $Mod PowerView.SessionInfo @{
+	    CName = field 0 String -MarshalAs @('LPWStr')
+	    UserName = field 1 String -MarshalAs @('LPWStr')
+	    Time = field 2 UInt32
+	    IdleTime = field 3 UInt32
+	}
 
-# enum used by $LOCALGROUP_MEMBERS_INFO_2 below
-$SID_NAME_USE = psenum $Mod SID_NAME_USE UInt16 @{
-    SidTypeUser             = 1
-    SidTypeGroup            = 2
-    SidTypeDomain           = 3
-    SidTypeAlias            = 4
-    SidTypeWellKnownGroup   = 5
-    SidTypeDeletedAccount   = 6
-    SidTypeInvalid          = 7
-    SidTypeUnknown          = 8
-    SidTypeComputer         = 9
-}
+	# enum used by $LOCALGROUP_MEMBERS_INFO_2 below
+	$SID_NAME_USE = psenum $Mod SID_NAME_USE UInt16 @{
+	    SidTypeUser             = 1
+	    SidTypeGroup            = 2
+	    SidTypeDomain           = 3
+	    SidTypeAlias            = 4
+	    SidTypeWellKnownGroup   = 5
+	    SidTypeDeletedAccount   = 6
+	    SidTypeInvalid          = 7
+	    SidTypeUnknown          = 8
+	    SidTypeComputer         = 9
+	}
 
-# the NetLocalGroupEnum result structure
-$LOCALGROUP_INFO_1 = struct $Mod LOCALGROUP_INFO_1 @{
-    lgrpi1_name = field 0 String -MarshalAs @('LPWStr')
-    lgrpi1_comment = field 1 String -MarshalAs @('LPWStr')
-}
+	# the NetLocalGroupEnum result structure
+	$LOCALGROUP_INFO_1 = struct $Mod LOCALGROUP_INFO_1 @{
+	    lgrpi1_name = field 0 String -MarshalAs @('LPWStr')
+	    lgrpi1_comment = field 1 String -MarshalAs @('LPWStr')
+	}
 
-# the NetLocalGroupGetMembers result structure
-$LOCALGROUP_MEMBERS_INFO_2 = struct $Mod LOCALGROUP_MEMBERS_INFO_2 @{
-    lgrmi2_sid = field 0 IntPtr
-    lgrmi2_sidusage = field 1 $SID_NAME_USE
-    lgrmi2_domainandname = field 2 String -MarshalAs @('LPWStr')
-}
+	# the NetLocalGroupGetMembers result structure
+	$LOCALGROUP_MEMBERS_INFO_2 = struct $Mod LOCALGROUP_MEMBERS_INFO_2 @{
+	    lgrmi2_sid = field 0 IntPtr
+	    lgrmi2_sidusage = field 1 $SID_NAME_USE
+	    lgrmi2_domainandname = field 2 String -MarshalAs @('LPWStr')
+	}
 
-# enums used in DS_DOMAIN_TRUSTS
-$DsDomainFlag = psenum $Mod DsDomain.Flags UInt32 @{
-    IN_FOREST       = 1
-    DIRECT_OUTBOUND = 2
-    TREE_ROOT       = 4
-    PRIMARY         = 8
-    NATIVE_MODE     = 16
-    DIRECT_INBOUND  = 32
-} -Bitfield
-$DsDomainTrustType = psenum $Mod DsDomain.TrustType UInt32 @{
-    DOWNLEVEL   = 1
-    UPLEVEL     = 2
-    MIT         = 3
-    DCE         = 4
-}
-$DsDomainTrustAttributes = psenum $Mod DsDomain.TrustAttributes UInt32 @{
-    NON_TRANSITIVE      = 1
-    UPLEVEL_ONLY        = 2
-    FILTER_SIDS         = 4
-    FOREST_TRANSITIVE   = 8
-    CROSS_ORGANIZATION  = 16
-    WITHIN_FOREST       = 32
-    TREAT_AS_EXTERNAL   = 64
-}
+	# enums used in DS_DOMAIN_TRUSTS
+	$DsDomainFlag = psenum $Mod DsDomain.Flags UInt32 @{
+	    IN_FOREST       = 1
+	    DIRECT_OUTBOUND = 2
+	    TREE_ROOT       = 4
+	    PRIMARY         = 8
+	    NATIVE_MODE     = 16
+	    DIRECT_INBOUND  = 32
+	} -Bitfield
+	$DsDomainTrustType = psenum $Mod DsDomain.TrustType UInt32 @{
+	    DOWNLEVEL   = 1
+	    UPLEVEL     = 2
+	    MIT         = 3
+	    DCE         = 4
+	}
+	$DsDomainTrustAttributes = psenum $Mod DsDomain.TrustAttributes UInt32 @{
+	    NON_TRANSITIVE      = 1
+	    UPLEVEL_ONLY        = 2
+	    FILTER_SIDS         = 4
+	    FOREST_TRANSITIVE   = 8
+	    CROSS_ORGANIZATION  = 16
+	    WITHIN_FOREST       = 32
+	    TREAT_AS_EXTERNAL   = 64
+	}
 
-# the DsEnumerateDomainTrusts result structure
-$DS_DOMAIN_TRUSTS = struct $Mod DS_DOMAIN_TRUSTS @{
-    NetbiosDomainName = field 0 String -MarshalAs @('LPWStr')
-    DnsDomainName = field 1 String -MarshalAs @('LPWStr')
-    Flags = field 2 $DsDomainFlag
-    ParentIndex = field 3 UInt32
-    TrustType = field 4 $DsDomainTrustType
-    TrustAttributes = field 5 $DsDomainTrustAttributes
-    DomainSid = field 6 IntPtr
-    DomainGuid = field 7 Guid
-}
+	# the DsEnumerateDomainTrusts result structure
+	$DS_DOMAIN_TRUSTS = struct $Mod DS_DOMAIN_TRUSTS @{
+	    NetbiosDomainName = field 0 String -MarshalAs @('LPWStr')
+	    DnsDomainName = field 1 String -MarshalAs @('LPWStr')
+	    Flags = field 2 $DsDomainFlag
+	    ParentIndex = field 3 UInt32
+	    TrustType = field 4 $DsDomainTrustType
+	    TrustAttributes = field 5 $DsDomainTrustAttributes
+	    DomainSid = field 6 IntPtr
+	    DomainGuid = field 7 Guid
+	}
 
-# used by WNetAddConnection2W
-$NETRESOURCEW = struct $Mod NETRESOURCEW @{
-    dwScope =         field 0 UInt32
-    dwType =          field 1 UInt32
-    dwDisplayType =   field 2 UInt32
-    dwUsage =         field 3 UInt32
-    lpLocalName =     field 4 String -MarshalAs @('LPWStr')
-    lpRemoteName =    field 5 String -MarshalAs @('LPWStr')
-    lpComment =       field 6 String -MarshalAs @('LPWStr')
-    lpProvider =      field 7 String -MarshalAs @('LPWStr')
-}
+	# used by WNetAddConnection2W
+	$NETRESOURCEW = struct $Mod NETRESOURCEW @{
+	    dwScope =         field 0 UInt32
+	    dwType =          field 1 UInt32
+	    dwDisplayType =   field 2 UInt32
+	    dwUsage =         field 3 UInt32
+	    lpLocalName =     field 4 String -MarshalAs @('LPWStr')
+	    lpRemoteName =    field 5 String -MarshalAs @('LPWStr')
+	    lpComment =       field 6 String -MarshalAs @('LPWStr')
+	    lpProvider =      field 7 String -MarshalAs @('LPWStr')
+	}
 
-# all of the Win32 API functions we need
-$FunctionDefinitions = @(
-    (func netapi32 NetShareEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
-    (func netapi32 NetWkstaUserEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
-    (func netapi32 NetSessionEnum ([Int]) @([String], [String], [String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
-    (func netapi32 NetLocalGroupEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
-    (func netapi32 NetLocalGroupGetMembers ([Int]) @([String], [String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
-    (func netapi32 DsGetSiteName ([Int]) @([String], [IntPtr].MakeByRefType())),
-    (func netapi32 DsEnumerateDomainTrusts ([Int]) @([String], [UInt32], [IntPtr].MakeByRefType(), [IntPtr].MakeByRefType())),
-    (func netapi32 NetApiBufferFree ([Int]) @([IntPtr])),
-    (func advapi32 ConvertSidToStringSid ([Int]) @([IntPtr], [String].MakeByRefType()) -SetLastError),
-    (func advapi32 OpenSCManagerW ([IntPtr]) @([String], [String], [Int]) -SetLastError),
-    (func advapi32 CloseServiceHandle ([Int]) @([IntPtr])),
-    (func advapi32 LogonUser ([Bool]) @([String], [String], [String], [UInt32], [UInt32], [IntPtr].MakeByRefType()) -SetLastError),
-    (func advapi32 ImpersonateLoggedOnUser ([Bool]) @([IntPtr]) -SetLastError),
-    (func advapi32 RevertToSelf ([Bool]) @() -SetLastError),
-    (func wtsapi32 WTSOpenServerEx ([IntPtr]) @([String])),
-    (func wtsapi32 WTSEnumerateSessionsEx ([Int]) @([IntPtr], [Int32].MakeByRefType(), [Int], [IntPtr].MakeByRefType(), [Int32].MakeByRefType()) -SetLastError),
-    (func wtsapi32 WTSQuerySessionInformation ([Int]) @([IntPtr], [Int], [Int], [IntPtr].MakeByRefType(), [Int32].MakeByRefType()) -SetLastError),
-    (func wtsapi32 WTSFreeMemoryEx ([Int]) @([Int32], [IntPtr], [Int32])),
-    (func wtsapi32 WTSFreeMemory ([Int]) @([IntPtr])),
-    (func wtsapi32 WTSCloseServer ([Int]) @([IntPtr])),
-    (func Mpr WNetAddConnection2W ([Int]) @($NETRESOURCEW, [String], [String], [UInt32])),
-    (func Mpr WNetCancelConnection2 ([Int]) @([String], [Int], [Bool])),
-    (func kernel32 CloseHandle ([Bool]) @([IntPtr]) -SetLastError)
-)
+	# all of the Win32 API functions we need
+	$FunctionDefinitions = @(
+	    (func netapi32 NetShareEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
+	    (func netapi32 NetWkstaUserEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
+	    (func netapi32 NetSessionEnum ([Int]) @([String], [String], [String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
+	    (func netapi32 NetLocalGroupEnum ([Int]) @([String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
+	    (func netapi32 NetLocalGroupGetMembers ([Int]) @([String], [String], [Int], [IntPtr].MakeByRefType(), [Int], [Int32].MakeByRefType(), [Int32].MakeByRefType(), [Int32].MakeByRefType())),
+	    (func netapi32 DsGetSiteName ([Int]) @([String], [IntPtr].MakeByRefType())),
+	    (func netapi32 DsEnumerateDomainTrusts ([Int]) @([String], [UInt32], [IntPtr].MakeByRefType(), [IntPtr].MakeByRefType())),
+	    (func netapi32 NetApiBufferFree ([Int]) @([IntPtr])),
+	    (func advapi32 ConvertSidToStringSid ([Int]) @([IntPtr], [String].MakeByRefType()) -SetLastError),
+	    (func advapi32 OpenSCManagerW ([IntPtr]) @([String], [String], [Int]) -SetLastError),
+	    (func advapi32 CloseServiceHandle ([Int]) @([IntPtr])),
+	    (func advapi32 LogonUser ([Bool]) @([String], [String], [String], [UInt32], [UInt32], [IntPtr].MakeByRefType()) -SetLastError),
+	    (func advapi32 ImpersonateLoggedOnUser ([Bool]) @([IntPtr]) -SetLastError),
+	    (func advapi32 RevertToSelf ([Bool]) @() -SetLastError),
+	    (func wtsapi32 WTSOpenServerEx ([IntPtr]) @([String])),
+	    (func wtsapi32 WTSEnumerateSessionsEx ([Int]) @([IntPtr], [Int32].MakeByRefType(), [Int], [IntPtr].MakeByRefType(), [Int32].MakeByRefType()) -SetLastError),
+	    (func wtsapi32 WTSQuerySessionInformation ([Int]) @([IntPtr], [Int], [Int], [IntPtr].MakeByRefType(), [Int32].MakeByRefType()) -SetLastError),
+	    (func wtsapi32 WTSFreeMemoryEx ([Int]) @([Int32], [IntPtr], [Int32])),
+	    (func wtsapi32 WTSFreeMemory ([Int]) @([IntPtr])),
+	    (func wtsapi32 WTSCloseServer ([Int]) @([IntPtr])),
+	    (func Mpr WNetAddConnection2W ([Int]) @($NETRESOURCEW, [String], [String], [UInt32])),
+	    (func Mpr WNetCancelConnection2 ([Int]) @([String], [Int], [Bool])),
+	    (func kernel32 CloseHandle ([Bool]) @([IntPtr]) -SetLastError)
+	)
 
-$Types = $FunctionDefinitions | Add-Win32Type -Module $Mod -Namespace 'Win32'
-$Netapi32 = $Types['netapi32']
-$Advapi32 = $Types['advapi32']
-$Wtsapi32 = $Types['wtsapi32']
-$Mpr = $Types['Mpr']
-$Kernel32 = $Types['kernel32']
+	$Types = $FunctionDefinitions | Add-Win32Type -Module $Mod -Namespace 'Win32'
+	$Netapi32 = $Types['netapi32']
+	$Advapi32 = $Types['advapi32']
+	$Wtsapi32 = $Types['wtsapi32']
+	$Mpr = $Types['Mpr']
+	$Kernel32 = $Types['kernel32']
 
-Set-Alias Get-IPAddress Resolve-IPAddress
-Set-Alias Convert-NameToSid ConvertTo-SID
-Set-Alias Convert-SidToName ConvertFrom-SID
-Set-Alias Request-SPNTicket Get-DomainSPNTicket
-Set-Alias Get-DNSZone Get-DomainDNSZone
-Set-Alias Get-DNSRecord Get-DomainDNSRecord
-Set-Alias Get-NetDomain Get-Domain
-Set-Alias Get-NetDomainController Get-DomainController
-Set-Alias Get-NetForest Get-Forest
-Set-Alias Get-NetForestDomain Get-ForestDomain
-Set-Alias Get-NetForestCatalog Get-ForestGlobalCatalog
-Set-Alias Get-NetUser Get-DomainUser
-Set-Alias Get-UserEvent Get-DomainUserEvent
-Set-Alias Get-NetComputer Get-DomainComputer
-Set-Alias Get-ADObject Get-DomainObject
-Set-Alias Set-ADObject Set-DomainObject
-Set-Alias Get-ObjectAcl Get-DomainObjectAcl
-Set-Alias Add-ObjectAcl Add-DomainObjectAcl
-Set-Alias Invoke-ACLScanner Find-InterestingDomainAcl
-Set-Alias Get-GUIDMap Get-DomainGUIDMap
-Set-Alias Get-NetOU Get-DomainOU
-Set-Alias Get-NetSite Get-DomainSite
-Set-Alias Get-NetSubnet Get-DomainSubnet
-Set-Alias Get-NetGroup Get-DomainGroup
-Set-Alias Find-ManagedSecurityGroups Get-DomainManagedSecurityGroup
-Set-Alias Get-NetGroupMember Get-DomainGroupMember
-Set-Alias Get-NetFileServer Get-DomainFileServer
-Set-Alias Get-DFSshare Get-DomainDFSShare
-Set-Alias Get-NetGPO Get-DomainGPO
-Set-Alias Get-NetGPOGroup Get-DomainGPOLocalGroup
-Set-Alias Find-GPOLocation Get-DomainGPOUserLocalGroupMapping
-Set-Alias Find-GPOComputerAdmin Get-DomainGPOComputerLocalGroupMapping
-Set-Alias Get-LoggedOnLocal Get-RegLoggedOn
-Set-Alias Invoke-CheckLocalAdminAccess Test-AdminAccess
-Set-Alias Get-SiteName Get-NetComputerSiteName
-Set-Alias Get-Proxy Get-WMIRegProxy
-Set-Alias Get-LastLoggedOn Get-WMIRegLastLoggedOn
-Set-Alias Get-CachedRDPConnection Get-WMIRegCachedRDPConnection
-Set-Alias Get-RegistryMountedDrive Get-WMIRegMountedDrive
-Set-Alias Get-NetProcess Get-WMIProcess
-Set-Alias Invoke-ThreadedFunction New-ThreadedFunction
-Set-Alias Invoke-UserHunter Find-DomainUserLocation
-Set-Alias Invoke-ProcessHunter Find-DomainProcess
-Set-Alias Invoke-EventHunter Find-DomainUserEvent
-Set-Alias Invoke-ShareFinder Find-DomainShare
-Set-Alias Invoke-FileFinder Find-InterestingDomainShareFile
-Set-Alias Invoke-EnumerateLocalAdmin Find-DomainLocalGroupMember
-Set-Alias Get-NetDomainTrust Get-DomainTrust
-Set-Alias Get-NetForestTrust Get-ForestTrust
-Set-Alias Find-ForeignUser Get-DomainForeignUser
-Set-Alias Find-ForeignGroup Get-DomainForeignGroupMember
-Set-Alias Invoke-MapDomainTrust Get-DomainTrustMapping
+	Set-Alias Get-IPAddress Resolve-IPAddress
+	Set-Alias Convert-NameToSid ConvertTo-SID
+	Set-Alias Convert-SidToName ConvertFrom-SID
+	Set-Alias Request-SPNTicket Get-DomainSPNTicket
+	Set-Alias Get-DNSZone Get-DomainDNSZone
+	Set-Alias Get-DNSRecord Get-DomainDNSRecord
+	Set-Alias Get-NetDomain Get-Domain
+	Set-Alias Get-NetDomainController Get-DomainController
+	Set-Alias Get-NetForest Get-Forest
+	Set-Alias Get-NetForestDomain Get-ForestDomain
+	Set-Alias Get-NetForestCatalog Get-ForestGlobalCatalog
+	Set-Alias Get-NetUser Get-DomainUser
+	Set-Alias Get-UserEvent Get-DomainUserEvent
+	Set-Alias Get-NetComputer Get-DomainComputer
+	Set-Alias Get-ADObject Get-DomainObject
+	Set-Alias Set-ADObject Set-DomainObject
+	Set-Alias Get-ObjectAcl Get-DomainObjectAcl
+	Set-Alias Add-ObjectAcl Add-DomainObjectAcl
+	Set-Alias Invoke-ACLScanner Find-InterestingDomainAcl
+	Set-Alias Get-GUIDMap Get-DomainGUIDMap
+	Set-Alias Get-NetOU Get-DomainOU
+	Set-Alias Get-NetSite Get-DomainSite
+	Set-Alias Get-NetSubnet Get-DomainSubnet
+	Set-Alias Get-NetGroup Get-DomainGroup
+	Set-Alias Find-ManagedSecurityGroups Get-DomainManagedSecurityGroup
+	Set-Alias Get-NetGroupMember Get-DomainGroupMember
+	Set-Alias Get-NetFileServer Get-DomainFileServer
+	Set-Alias Get-DFSshare Get-DomainDFSShare
+	Set-Alias Get-NetGPO Get-DomainGPO
+	Set-Alias Get-NetGPOGroup Get-DomainGPOLocalGroup
+	Set-Alias Find-GPOLocation Get-DomainGPOUserLocalGroupMapping
+	Set-Alias Find-GPOComputerAdmin Get-DomainGPOComputerLocalGroupMapping
+	Set-Alias Get-LoggedOnLocal Get-RegLoggedOn
+	Set-Alias Invoke-CheckLocalAdminAccess Test-AdminAccess
+	Set-Alias Get-SiteName Get-NetComputerSiteName
+	Set-Alias Get-Proxy Get-WMIRegProxy
+	Set-Alias Get-LastLoggedOn Get-WMIRegLastLoggedOn
+	Set-Alias Get-CachedRDPConnection Get-WMIRegCachedRDPConnection
+	Set-Alias Get-RegistryMountedDrive Get-WMIRegMountedDrive
+	Set-Alias Get-NetProcess Get-WMIProcess
+	Set-Alias Invoke-ThreadedFunction New-ThreadedFunction
+	Set-Alias Invoke-UserHunter Find-DomainUserLocation
+	Set-Alias Invoke-ProcessHunter Find-DomainProcess
+	Set-Alias Invoke-EventHunter Find-DomainUserEvent
+	Set-Alias Invoke-ShareFinder Find-DomainShare
+	Set-Alias Invoke-FileFinder Find-InterestingDomainShareFile
+	Set-Alias Invoke-EnumerateLocalAdmin Find-DomainLocalGroupMember
+	Set-Alias Get-NetDomainTrust Get-DomainTrust
+	Set-Alias Get-NetForestTrust Get-ForestTrust
+	Set-Alias Find-ForeignUser Get-DomainForeignUser
+	Set-Alias Find-ForeignGroup Get-DomainForeignGroupMember
+	Set-Alias Invoke-MapDomainTrust Get-DomainTrustMapping
 Set-Alias Get-DomainPolicy Get-DomainPolicyData
