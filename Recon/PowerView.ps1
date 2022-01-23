@@ -3169,7 +3169,7 @@ A custom PSObject with LDAP hashtable properties translated.
 
     $Properties.keys | Sort-Object | ForEach-Object {
         if ($_ -ne 'adspath') {
-            if (($_ -eq 'objectsid') -or ($_ -eq 'sidhistory')) {
+            if (($_ -eq 'objectsid') -or ($_ -eq 'sidhistory') -or ($_ -eq 'securityidentifier')) {
                 # convert all listed sids (i.e. if multiple are listed in sidHistory)
                 $ObjectProperties[$_] = $Properties[$_] | ForEach-Object { (New-Object System.Security.Principal.SecurityIdentifier($_, 0)).Value }
             }
@@ -8700,7 +8700,6 @@ Custom PSObject with ACL entries.
                 if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
                     $Object = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        Write-Output "TEST: $a"
                         if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor')) {
                             $Object[$a] = $_.Attributes[$a]
                         }
@@ -9019,7 +9018,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty,
 
-        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended')]
+        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended', 'GenericWrite')]
         [String]
         $Rights = 'All',
 
@@ -9084,6 +9083,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                     #   when applied to a domain's ACL, allows for the use of DCSync
                     'DCSync' { '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', '89e95b76-444d-4c62-991a-0facbeda640c'}
                     'AllExtended' { 'ExtendedRight' }
+                    'GenericWrite' { 'GenericWrite' }
                 }
             }
 
@@ -9093,7 +9093,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                 try {
                     $Identity = [System.Security.Principal.IdentityReference] ([System.Security.Principal.SecurityIdentifier]$PrincipalObject.objectsid)
 
-                    if ($GUIDs -and !($GUIDs -eq 'ExtendedRight')) {
+                    if ($GUIDs -and !($GUIDs -eq 'ExtendedRight') -and !($GUIDs -eq 'GenericWrite')) {
                         ForEach ($GUID in $GUIDs) {
                             $NewGUID = New-Object Guid $GUID
                             $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'ExtendedRight'
@@ -9102,6 +9102,10 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                     }
                     elseif ($GUIDs -eq 'ExtendedRight') {
                         $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'ExtendedRight'
+                        $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $InheritanceType
+                    }
+                    elseif ($GUIDs -eq 'GenericWrite') {
+                        $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'GenericWrite'
                         $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $InheritanceType
                     }
                     else {
