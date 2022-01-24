@@ -8455,6 +8455,10 @@ Wildcards accepted.
 
 Switch. Return the SACL instead of the DACL for the object (default behavior).
 
+.PARAMETER Owner
+
+Switch. Return the Owner instead of the DACL for the object (default behavior).
+
 .PARAMETER ResolveGUIDs
 
 Switch. Resolve GUIDs to their display names.
@@ -8554,6 +8558,9 @@ Custom PSObject with ACL entries.
         $Sacl,
 
         [Switch]
+        $Owner,
+
+        [Switch]
         $ResolveGUIDs,
 
         [String]
@@ -8613,6 +8620,9 @@ Custom PSObject with ACL entries.
 
         if ($PSBoundParameters['Sacl']) {
             $SearcherArguments['SecurityMasks'] = 'Sacl'
+        }
+        elseif ($PSBoundParameters['Owner']) {
+            $SearcherArguments['SecurityMasks'] = 'Owner'
         }
         else {
             $SearcherArguments['SecurityMasks'] = 'Dacl'
@@ -8697,7 +8707,7 @@ Custom PSObject with ACL entries.
             }
             $Results = Invoke-LDAPQuery @SearcherArguments
             $Results | Where-Object {$_} | ForEach-Object {
-                if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
+                if (Get-Member -InputObject $_ -name "Attributes" -Membertype Properties) {
                     $Object = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
                         if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor')) {
@@ -8726,62 +8736,67 @@ Custom PSObject with ACL entries.
 
                 try {
                     $SecurityDescriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Object['ntsecuritydescriptor'][0], 0
-                    $SecurityDescriptor | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
-                        $Continue = $False
-                        $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
-                        $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
-                        $_ | Add-Member NoteProperty 'ActiveDirectoryRights' ([Enum]::ToObject([System.DirectoryServices.ActiveDirectoryRights], $_.AccessMask))
-                        if ($PSBoundParameters['RightsFilter']) {
-                            $GuidFilter = Switch ($RightsFilter) {
-                                'ResetPassword' { @('00299570-246d-11d0-a768-00aa006e0529') }
-                                'WriteMembers' { @('bf9679c0-0de6-11d0-a285-00aa003049e2') }
-                                'DCSync' { @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', 'GenericAll', 'ExtendedRight') }
-                                'AllExtended' { 'ExtendedRight' }
-                                'ReadLAPS' { @('ExtendedRight', 'GenericAll', 'WriteDacl') }
-                                'All' { 'GenericAll' }
-                                Default { '00000000-0000-0000-0000-000000000000' }
-                            }
-                            if ($_.AceQualifier -eq 'AccessAllowed' -and (($_.ObjectAceType -and $GuidFilter -contains $_.ObjectAceType) -or ($_.InheritedObjectAceType -and $GuidFilter -contains $_.InheritedObjectAceType))) {
-                                $Continue = $True
-                            }
-                            elseif ($_.AceQualifier -eq 'AccessAllowed' -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType) -and (($_.ActiveDirectoryRights -match $GuidFilter) -or ($GuidFilter -contains $_.ActiveDirectoryRights))) {
-                                $Continue = $True
-                            }
-                            elseif (($_.AceQualifier -eq 'AccessAllowed') -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType)) {
-                                ForEach ($Guid in $GuidFilter) {
-                                    if ($_.ActiveDirectoryRights -match $Guid) {
-                                        $Continue = $True
+                    if ($PSBoundParameters['Owner']) {
+                        $SecurityDescriptor.Owner.Value
+                    }
+                    else { 
+                        $SecurityDescriptor | ForEach-Object { if ($PSBoundParameters['Sacl']) {$_.SystemAcl} else {$_.DiscretionaryAcl} } | ForEach-Object {
+                            $Continue = $False
+                            $_ | Add-Member NoteProperty 'ObjectDN' $Object.distinguishedname[0]
+                            $_ | Add-Member NoteProperty 'ObjectSID' $ObjectSid
+                            $_ | Add-Member NoteProperty 'ActiveDirectoryRights' ([Enum]::ToObject([System.DirectoryServices.ActiveDirectoryRights], $_.AccessMask))
+                            if ($PSBoundParameters['RightsFilter']) {
+                                $GuidFilter = Switch ($RightsFilter) {
+                                    'ResetPassword' { @('00299570-246d-11d0-a768-00aa006e0529') }
+                                    'WriteMembers' { @('bf9679c0-0de6-11d0-a285-00aa003049e2') }
+                                    'DCSync' { @('1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', 'GenericAll', 'ExtendedRight') }
+                                    'AllExtended' { 'ExtendedRight' }
+                                    'ReadLAPS' { @('ExtendedRight', 'GenericAll', 'WriteDacl') }
+                                    'All' { 'GenericAll' }
+                                    Default { '00000000-0000-0000-0000-000000000000' }
+                                }
+                                if ($_.AceQualifier -eq 'AccessAllowed' -and (($_.ObjectAceType -and $GuidFilter -contains $_.ObjectAceType) -or ($_.InheritedObjectAceType -and $GuidFilter -contains $_.InheritedObjectAceType))) {
+                                    $Continue = $True
+                                }
+                                elseif ($_.AceQualifier -eq 'AccessAllowed' -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType) -and (($_.ActiveDirectoryRights -match $GuidFilter) -or ($GuidFilter -contains $_.ActiveDirectoryRights))) {
+                                    $Continue = $True
+                                }
+                                elseif (($_.AceQualifier -eq 'AccessAllowed') -and !($_.ObjectAceType) -and !($_.InheritedObjectAceType)) {
+                                    ForEach ($Guid in $GuidFilter) {
+                                        if ($_.ActiveDirectoryRights -match $Guid) {
+                                            $Continue = $True
+                                        }
                                     }
                                 }
                             }
-                        }
-                        else {
-                            $Continue = $True
-                        }
-                        if ($Continue) {
-                            if ($GUIDs) {
-                                # if we're resolving GUIDs, map them them to the resolved hash table
-                                $AclProperties = @{}
-                                $_.psobject.properties | ForEach-Object {
-                                    if ($_.Name -match 'ObjectType|InheritedObjectType|ObjectAceType|InheritedObjectAceType') {
-                                        try {
-                                            $AclProperties[$_.Name] = $GUIDs[$_.Value.toString()]
+                            else {
+                                $Continue = $True
+                            }
+                            if ($Continue) {
+                                if ($GUIDs) {
+                                    # if we're resolving GUIDs, map them them to the resolved hash table
+                                    $AclProperties = @{}
+                                    $_.psobject.properties | ForEach-Object {
+                                        if ($_.Name -match 'ObjectType|InheritedObjectType|ObjectAceType|InheritedObjectAceType') {
+                                            try {
+                                                $AclProperties[$_.Name] = $GUIDs[$_.Value.toString()]
+                                            }
+                                            catch {
+                                                $AclProperties[$_.Name] = $_.Value
+                                            }
                                         }
-                                        catch {
+                                        else {
                                             $AclProperties[$_.Name] = $_.Value
                                         }
                                     }
-                                    else {
-                                        $AclProperties[$_.Name] = $_.Value
-                                    }
+                                    $OutObject = New-Object -TypeName PSObject -Property $AclProperties
+                                    $OutObject.PSObject.TypeNames.Insert(0, 'PowerView.ACL')
+                                    $OutObject
                                 }
-                                $OutObject = New-Object -TypeName PSObject -Property $AclProperties
-                                $OutObject.PSObject.TypeNames.Insert(0, 'PowerView.ACL')
-                                $OutObject
-                            }
-                            else {
-                                $_.PSObject.TypeNames.Insert(0, 'PowerView.ACL')
-                                $_
+                                else {
+                                    $_.PSObject.TypeNames.Insert(0, 'PowerView.ACL')
+                                    $_
+                                }
                             }
                         }
                     }
