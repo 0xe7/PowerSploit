@@ -23920,7 +23920,8 @@ String
         $LDAPFilter
     )
 
-    $AvoidNulls = @("samaccounttype")
+    $AvoidNops = @("samaccounttype", "pwdlastset")
+    $AvoidHex = @("useraccountcontrol")
     $Nops = @("\00")
     foreach ($i in 128..255) {$Nops += '\{0:x}' -f $i}
 
@@ -23928,33 +23929,34 @@ String
     $Parts = $LDAPFilter -split '='
     $OutFilter = ""
     if ($Parts[0].IndexOf('(') -ne -1) {
-        $LastAttribute = $Parts[0].ToLower().Split('(')[-1]
+        $LastAttribute = $Parts[0].ToLower().Split('(')[-1].Trim('<').Trim('>')
     }
     else {
-        $LastAttribute = $Parts[0].ToLower()
+        $LastAttribute = $Parts[0].ToLower().Trim('<').Trim('>')
     }
     $Include = Get-RandomizedCasing -InputString $Parts[0]
-    if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
         $OutFilter += "$($Include)~="
     }
     else {
         $OutFilter += "$($Include)="
     }
     $Skip = $False
-    if ($Parts[0].ToLower() -match 'useraccountcontrol') {
-        $Skip = $True
-    }
+    foreach ($Item in $AvoidHex) {if ($Parts[0].ToLower() -match $Item) {$Skip = $True}}
     for ($i=1; $i -lt $Parts.Length; $i++) {
         if ($Skip) {
-            if ($Parts[$i].ToLower() -notmatch 'useraccountcontrol') {
-                $Skip = $False
-            }
             if ($i -eq $Parts.Length - 1) {
                 $OutFilter += "$($Parts[$i])"
             }
             else {
+                $Check = 0
+                $LastAttribute = $Parts[$i].SubString($Parts[$i].IndexOf('(') + 1).Trim('<').Trim('>').ToLower()
+                foreach ($Item in $AvoidHex) {if ($LastAttribute -notmatch $Item) {$Check += 1}}
+                if ($Check -eq $AvoidHex.Count) {
+                    $Skip = $False
+                }
                 $Include = Get-RandomizedCasing -InputString $Parts[$i]
-                if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+                if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
                     $OutFilter += "$($Include)~="
                 }
                 else {
@@ -23986,7 +23988,7 @@ String
                     $OutValueHash[$Index] = '\{0:x}' -f [System.Convert]::ToUInt32($Value[$Index])
                 }
                 for ($c=0; $c -lt $Value.Length; $c++) {
-                    if ((Get-Random -Maximum 2) -and ($AvoidNulls -notcontains $LastAttribute)) {
+                    if ((Get-Random -Maximum 2) -and ($AvoidNops -notcontains $LastAttribute)) {
                         $OutFilter += $Nops[(Get-Random -Maximum $Nops.Length)]
                     }
                     if ($OutValueHash.keys -contains $c) {
@@ -23996,11 +23998,14 @@ String
                         $OutFilter += "$($Value[$c])"
                     }
                 }
-                if ((Get-Random -Maximum 2) -and ($AvoidNulls -notcontains $LastAttribute)) {
+                if ((Get-Random -Maximum 2) -and ($AvoidNops -notcontains $LastAttribute)) {
                     $OutFilter += $Nops[(Get-Random -Maximum $Nops.Length)]
                 }
             }
             else {
+                if (($Value -eq '*') -and ($OutFilter.substring($OutFilter.Length - 2, 1) -eq '~')) {
+                    $OutFilter = $OutFilter.substring(0, $OutFilter.Length - 2) + '='
+                }
                 $OutFilter += "$($Value)"
             }
             if ($Parts[$i].IndexOf(')') -ne -1) {
@@ -24010,21 +24015,19 @@ String
                 }
                 else {
                     $Include = Get-RandomizedCasing -InputString $Next
-                    if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+                    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
                         $OutFilter += "$($Include)~="
                     }
                     else {
                         $OutFilter += "$($Include)="
                     }
                 }
-                if ($Next.ToLower() -match 'useraccountcontrol') {
-                    $Skip = $True
-                }
+                foreach ($Item in $AvoidHex) {if ($Next.ToLower() -match $Item) {$Skip = $True}}
                 if ($Next.IndexOf('(') -ne -1) {
-                    $LastAttribute = $Next.ToLower().Split('(')[-1]
+                    $LastAttribute = $Next.ToLower().Split('(')[-1].Trim('<').Trim('>')
                 }
                 else {
-                    $LastAttribute = $Next.ToLower()
+                    $LastAttribute = $Next.ToLower().Trim('<').Trim('>')
                 }
             }
             else {
