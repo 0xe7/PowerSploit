@@ -23920,8 +23920,16 @@ String
         $LDAPFilter
     )
 
-    $AvoidNops = @("samaccounttype", "pwdlastset")
-    $AvoidHex = @("useraccountcontrol")
+    $AvoidNops = @(
+        "samaccounttype",
+        "pwdlastset",
+        "objectclass",
+        "objectcategory",
+        "serviceprincipalname"
+    )
+    $AvoidHex = @(
+        "useraccountcontrol"
+    )
     $Nops = @("\00")
     foreach ($i in 128..255) {$Nops += '\{0:x}' -f $i}
 
@@ -23935,7 +23943,7 @@ String
         $LastAttribute = $Parts[0].ToLower().Trim('<').Trim('>')
     }
     $Include = Get-RandomizedCasing -InputString $Parts[0]
-    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
+    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<') -and ($Include -notmatch '>'))) {
         $OutFilter += "$($Include)~="
     }
     else {
@@ -23956,7 +23964,7 @@ String
                     $Skip = $False
                 }
                 $Include = Get-RandomizedCasing -InputString $Parts[$i]
-                if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
+                if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<') -and ($Include -notmatch '>'))) {
                     $OutFilter += "$($Include)~="
                 }
                 else {
@@ -23973,6 +23981,9 @@ String
                 $Value = $Parts[$i]
             }
             if ($Value.Length -gt 1) {
+                if (($Value -match '\*') -and ($OutFilter.substring($OutFilter.Length - 2, 1) -eq '~')) {
+                    $OutFilter = $OutFilter.substring(0, $OutFilter.Length - 2) + '='
+                }
                 $OutValueHash = @{}
                 $Value = Get-RandomizedCasing -InputString $Value
                 for ($c=0; $c -lt (Get-Random -Maximum $($Value.Length) -Minimum 1); $c++) {
@@ -23985,7 +23996,9 @@ String
                             } While ($OutValueHash.keys -contains $Index)
                         }
                     }
-                    $OutValueHash[$Index] = '\{0:x}' -f [System.Convert]::ToUInt32($Value[$Index])
+                    if ($Value[$Index] -ne '*') {
+                        $OutValueHash[$Index] = '\{0:x}' -f [System.Convert]::ToUInt32($Value[$Index])
+                    }
                 }
                 for ($c=0; $c -lt $Value.Length; $c++) {
                     if ((Get-Random -Maximum 2) -and ($AvoidNops -notcontains $LastAttribute)) {
@@ -24015,7 +24028,7 @@ String
                 }
                 else {
                     $Include = Get-RandomizedCasing -InputString $Next
-                    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<'))) {
+                    if ((Get-Random -Maximum 2) -and (($Include -notmatch ':') -and ($Include -notmatch '<') -and ($Include -notmatch '>'))) {
                         $OutFilter += "$($Include)~="
                     }
                     else {
