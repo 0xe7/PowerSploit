@@ -23886,7 +23886,7 @@ function Get-ObfuscatedFilterString {
 <#
 .SYNOPSIS
 
-Randomly obfuscate LDAP filter string with random hex characters.
+Randomly obfuscate LDAP filter string with random hex characters, randomised casing and random null bytes.
 
 Author: Charlie Clark (@exploitph)
 License: BSD 3-Clause
@@ -23894,7 +23894,7 @@ Required Dependencies:
 
 .DESCRIPTION
 
-Randomly obfuscate LDAP filter string with random hex characters.
+Randomly obfuscate LDAP filter string with random hex characters, randomised casing and random null bytes.
 
 .PARAMETER LDAPFilter
 
@@ -23920,23 +23920,46 @@ String
         $LDAPFilter
     )
 
+    $AvoidNulls = @("samaccounttype")
+    $Nops = @("\00")
+    foreach ($i in 128..255) {$Nops += '\{0:x}' -f $i}
+
     Write-Verbose "[Get-ObfuscatedFilterString] Obfuscating filter string: $($LDAPFilter)"
     $Parts = $LDAPFilter -split '='
-    $OutFilter = "$($Parts[0])="
+    $OutFilter = ""
+    if ($Parts[0].IndexOf('(') -ne -1) {
+        $LastAttribute = $Parts[0].ToLower().Split('(')[-1]
+    }
+    else {
+        $LastAttribute = $Parts[0].ToLower()
+    }
+    $Include = Get-RandomizedCasing -InputString $Parts[0]
+    if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+        $OutFilter += "$($Include)~="
+    }
+    else {
+        $OutFilter += "$($Include)="
+    }
     $Skip = $False
-    if ($Parts[0] -match 'userAccountControl') {
+    if ($Parts[0].ToLower() -match 'useraccountcontrol') {
         $Skip = $True
     }
     for ($i=1; $i -lt $Parts.Length; $i++) {
         if ($Skip) {
-            if ($Parts[$i] -notmatch 'userAccountControl') {
+            if ($Parts[$i].ToLower() -notmatch 'useraccountcontrol') {
                 $Skip = $False
             }
             if ($i -eq $Parts.Length - 1) {
                 $OutFilter += "$($Parts[$i])"
             }
             else {
-                $OutFilter += "$($Parts[$i])="
+                $Include = Get-RandomizedCasing -InputString $Parts[$i]
+                if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+                    $OutFilter += "$($Include)~="
+                }
+                else {
+                    $OutFilter += "$($Include)="
+                }
             }
 
         }
@@ -23949,6 +23972,7 @@ String
             }
             if ($Value.Length -gt 1) {
                 $OutValueHash = @{}
+                $Value = Get-RandomizedCasing -InputString $Value
                 for ($c=0; $c -lt (Get-Random -Maximum $($Value.Length) -Minimum 1); $c++) {
                     $Index = Get-Random -Maximum $($Value.Length - 1)
                     if (($OutValueHash.keys | Measure-Object).Count -ne 0) {
@@ -23962,12 +23986,18 @@ String
                     $OutValueHash[$Index] = '\{0:x}' -f [System.Convert]::ToUInt32($Value[$Index])
                 }
                 for ($c=0; $c -lt $Value.Length; $c++) {
+                    if ((Get-Random -Maximum 2) -and ($AvoidNulls -notcontains $LastAttribute)) {
+                        $OutFilter += $Nops[(Get-Random -Maximum $Nops.Length)]
+                    }
                     if ($OutValueHash.keys -contains $c) {
                         $OutFilter += "$($OutValueHash[$c])"
                     }
                     else {
                         $OutFilter += "$($Value[$c])"
                     }
+                }
+                if ((Get-Random -Maximum 2) -and ($AvoidNulls -notcontains $LastAttribute)) {
+                    $OutFilter += $Nops[(Get-Random -Maximum $Nops.Length)]
                 }
             }
             else {
@@ -23979,10 +24009,22 @@ String
                     $OutFilter += "$($Next)"
                 }
                 else {
-                    $OutFilter += "$($Next)="
+                    $Include = Get-RandomizedCasing -InputString $Next
+                    if ((Get-Random -Maximum 2) -and ($Include -notmatch ':')) {
+                        $OutFilter += "$($Include)~="
+                    }
+                    else {
+                        $OutFilter += "$($Include)="
+                    }
                 }
-                if ($Next -match 'userAccountControl') {
+                if ($Next.ToLower() -match 'useraccountcontrol') {
                     $Skip = $True
+                }
+                if ($Next.IndexOf('(') -ne -1) {
+                    $LastAttribute = $Next.ToLower().Split('(')[-1]
+                }
+                else {
+                    $LastAttribute = $Next.ToLower()
                 }
             }
             else {
@@ -23998,6 +24040,71 @@ String
 
     Write-Verbose "[Get-ObfuscatedFilterString] Filter string obfuscated: $($OutFilter)"
     $OutFilter
+}
+
+function Get-RandomizedCasing {
+<#
+.SYNOPSIS
+
+Randomize casing for provided string.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Randomize casing for provided string.
+
+.PARAMETER InputString
+
+Input string.
+
+.EXAMPLE
+
+Get-RandomizedCasing -InputString "testString"
+
+.INPUTS
+
+String
+
+.OUTPUTS
+
+String
+#>
+
+    [OutputType([PSObject])]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory = $True, ValueFromPipeline = $True)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $InputString
+    )
+
+    $NewValue = ""
+    foreach ($c in $InputString.ToCharArray()) {
+        if ($c -in 'abcdefghijklmnopqrstuvwxyz'.ToCharArray()) {
+            if (Get-Random -Maximum 2) {
+                $NewValue += $c.ToString().ToUpper()
+            }
+            else {
+                $NewValue += $c
+            }
+        }
+        elseif ($c -in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.ToCharArray()) {
+            if (Get-Random -Maximum 2) {
+                $NewValue += $c.ToString().ToLower()
+            }
+            else {
+                $NewValue += $c
+            }
+        }
+        else {
+            $NewValue += $c
+        }
+    }
+    $NewValue
 }
 
 function Convert-LogonHours {
