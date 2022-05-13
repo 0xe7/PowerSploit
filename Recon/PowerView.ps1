@@ -24325,8 +24325,8 @@ String
         if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
 
         $ForestArguments = @{}
-        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
-        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Domain']) { $ForestArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $ForestArguments['Server'] = $Server }
     }
 
     PROCESS {
