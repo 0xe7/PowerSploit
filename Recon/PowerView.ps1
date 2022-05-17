@@ -8884,10 +8884,19 @@ Switch. Specifies that the searcher should also return deleted/tombstoned object
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER AccessControlType
+
+The control type for the ACE, 'Allow' or 'Deny'.
+Defaults to 'Allow'.
+
 .PARAMETER Rights
 
-Rights to add for the principal, 'All', 'ResetPassword', 'WriteMembers', 'DCSync'.
+Rights to add for the principal, 'All', 'ResetPassword', 'WriteMembers', 'DCSync', 'WriteProperty'.
 Defaults to 'All'.
+
+.PARAMETER PropertyName
+
+The name of the property the ACE targets. Defaults to all properties.
 
 .PARAMETER RightsGUID
 
@@ -9033,15 +9042,26 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty,
 
-        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended', 'GenericWrite')]
+        [ValidateSet('Allow', 'Deny')]
+        [String]
+        $AccessControlType = 'Allow',
+
+        [ValidateSet('All', 'ResetPassword', 'WriteMembers', 'DCSync', 'AllExtended', 'GenericWrite', 'WriteProperty')]
         [String]
         $Rights = 'All',
+
+        [String]
+        $PropertyName,
 
         [Guid]
         $RightsGUID
     )
 
     BEGIN {
+        $GuidMapperArguments = @{}
+        if ($PSBoundParameters['TargetDomain']) { $GuidMapperArguments['Domain'] = $TargetDomain }
+        if ($PSBoundParameters['Server']) { $GuidMapperArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $GuidMapperArguments['Credential'] = $Credential }
         $TargetSearcherArguments = @{
             'Properties' = 'distinguishedname'
             'Raw' = $True
@@ -9071,6 +9091,13 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         if (-not $Principals) {
             throw "Unable to resolve principal: $PrincipalIdentity"
         }
+        $CommonPropertyNameMapping = @{
+            'serviceprincipalname' = 'Validated-SPN'
+            'SPN' = 'Validated-SPN'
+        }
+        $CommonPropertyGuidMapping = @{
+            'Validated-SPN' = 'f3a64788-5306-11d1-a9c5-0000f80367c1'
+        }
     }
 
     PROCESS {
@@ -9080,7 +9107,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
         ForEach ($TargetObject in $Targets) {
 
             $InheritanceType = [System.DirectoryServices.ActiveDirectorySecurityInheritance] 'None'
-            $ControlType = [System.Security.AccessControl.AccessControlType] 'Allow'
+            $ControlType = [System.Security.AccessControl.AccessControlType] $AccessControlType
             $ACEs = @()
 
             if ($RightsGUID) {
@@ -9099,6 +9126,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                     'DCSync' { '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2', '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2', '89e95b76-444d-4c62-991a-0facbeda640c'}
                     'AllExtended' { 'ExtendedRight' }
                     'GenericWrite' { 'GenericWrite' }
+                    'WriteProperty' { 'WriteProperty' }
                 }
             }
 
@@ -9108,7 +9136,7 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                 try {
                     $Identity = [System.Security.Principal.IdentityReference] ([System.Security.Principal.SecurityIdentifier]$PrincipalObject.objectsid)
 
-                    if ($GUIDs -and !($GUIDs -eq 'ExtendedRight') -and !($GUIDs -eq 'GenericWrite')) {
+                    if ($GUIDs -and !($GUIDs -eq 'ExtendedRight') -and !($GUIDs -eq 'GenericWrite') -and !($GUIDs -eq 'WriteProperty')) {
                         ForEach ($GUID in $GUIDs) {
                             $NewGUID = New-Object Guid $GUID
                             $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'ExtendedRight'
@@ -9122,6 +9150,37 @@ https://social.technet.microsoft.com/Forums/windowsserver/en-US/df3bfd33-c070-4a
                     elseif ($GUIDs -eq 'GenericWrite') {
                         $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'GenericWrite'
                         $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $InheritanceType
+                    }
+                    elseif ($GUIDs -eq 'WriteProperty' ) {
+                        $NewGUID = $null
+                        if ($PSBoundParameters['PropertyName']) {
+                            Write-Verbose "[Add-DomainObjectAcl] Trying to resolve PropertyName: $($PropertyName)"
+                            if ($CommonPropertyNameMapping.ContainsKey($PropertyName)) {
+                                $PropertyName = $CommonPropertyNameMapping[$PropertyName]
+                            }
+                            if ($CommonPropertyGuidMapping.ContainsKey($PropertyName)) {
+                                Write-Verbose "[Add-DomainObjectAcl] Found common Guid mapping, using Guid $($CommonPropertyGuidMapping[$PropertyName])"
+                                $NewGUID = New-Object Guid $CommonPropertyGuidMapping[$PropertyName]
+                            }
+                            if ($NewGUID -eq $null) {
+                                $AllGUIDs = Get-GUIDMap @GuidMapperArguments
+                                if ($AllGUIDs.ContainsValue($PropertyName)) {
+                                    $NewGUID = New-Object Guid ($AllGUIDs.GetEnumerator() | ?{$_.Value -eq $PropertyName}).Name
+                                }
+                                else {
+                                    Write-Verbose "[Add-DomainObjectAcl] Unable to resolve PropertyName, skipping ACE!"
+                                }
+                            }
+                        }
+                        else {
+                            Write-Verbose "[Add-DomainObjectAcl] No PropertyName passed, defaulting to All"
+                            $NewGUID = New-Object Guid "00000000-0000-0000-0000-000000000000"
+                        }
+                        if ($NewGUID -ne $null) {
+                            Write-Verbose "[Add-DomainObjectAcl] Using Guid: $($NewGUID.Guid)"
+                            $ADRights = [System.DirectoryServices.ActiveDirectoryRights] 'WriteProperty'
+                            $ACEs += New-Object System.DirectoryServices.ActiveDirectoryAccessRule $Identity, $ADRights, $ControlType, $NewGUID, $InheritanceType
+                        }
                     }
                     else {
                         # deault to GenericAll rights
