@@ -3165,6 +3165,17 @@ A custom PSObject with LDAP hashtable properties translated.
         $Properties
     )
 
+    $DateTimeAttrs = @(
+        'lastlogon'
+        'lastlogontimestamp'
+        'pwdlastset'
+        'lastlogoff'
+        'badPasswordTime'
+        'ms-mcs-admpwdexpirationtime'
+        #'pkioverlapperiod'
+        #'pkiexpirationperiod'
+    )
+
     $ObjectProperties = @{}
 
     $Properties.keys | Sort-Object | ForEach-Object {
@@ -3179,12 +3190,36 @@ A custom PSObject with LDAP hashtable properties translated.
             elseif ($_ -eq 'samaccounttype') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $SamAccountTypeEnum
             }
-            elseif ($_ -eq 'objectguid') {
+            elseif ($_ -match 'guid') {
                 # convert the GUID to a string
                 $ObjectProperties[$_] = (New-Object Guid (,$Properties[$_][0])).Guid
             }
             elseif ($_ -eq 'useraccountcontrol') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $UACEnum
+            }
+            elseif ($_ -eq 'systemflags') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $SystemFlagsEnum
+            }
+            elseif ($_ -eq 'schemaflagsex') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $SchemaFlagsExEnum
+            }
+            elseif ($_ -eq 'instancetype') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $InstanceTypeEnum
+            }
+            elseif ($_ -eq 'searchflags') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $SearchFlagsExEnum
+            }
+            elseif ($_ -eq 'mspki-certificate-name-flag') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $CertNameFlagEnum
+            }
+            elseif ($_ -eq 'flags') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $CertFlagsEnum
+            }
+            elseif ($_ -eq 'mspki-enrollment-flag') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $CertEnrollmentFlagEnum
+            }
+            elseif ($_ -eq 'mspki-private-key-flag') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $CertPrivKeyFlagEnum
             }
             elseif ($_ -eq 'ntsecuritydescriptor') {
                 # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
@@ -3220,7 +3255,7 @@ A custom PSObject with LDAP hashtable properties translated.
                     $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
                 }
             }
-            elseif ( ($_ -eq 'lastlogon') -or ($_ -eq 'lastlogontimestamp') -or ($_ -eq 'pwdlastset') -or ($_ -eq 'lastlogoff') -or ($_ -eq 'badPasswordTime')  -or ($_ -eq 'ms-mcs-admpwdexpirationtime')) {
+            elseif ($DateTimeAttrs -contains $_) {
                 # convert timestamps
                 if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
                     # if we have a System.__ComObject
@@ -3410,7 +3445,7 @@ System.DirectoryServices.DirectorySearcher
 
         [ValidateRange(1, 10000)]
         [Int]
-        $ResultPageSize = 200,
+        $ResultPageSize = 1000,
 
         [ValidateRange(1, 10000)]
         [Int]
@@ -3428,7 +3463,13 @@ System.DirectoryServices.DirectorySearcher
         $Credential = [Management.Automation.PSCredential]::Empty,
 
         [Switch]
-        $SSL
+        $SSL,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     PROCESS {
@@ -3469,22 +3510,41 @@ System.DirectoryServices.DirectorySearcher
             $BindServer = $Server
         }
 
-        if ($PSBoundParameters['SSL']) {
+        if ($PSBoundParameters['SSL'] -or $PSBoundParameters['Certificate']) {
             if ([string]::IsNullOrEmpty($BindServer)) {
                 $DomainObject = Get-Domain
                 $BindServer = ($DomainObject.PdcRoleOwner).Name
             }
+            $Port = 389
+            if ($PSBoundParameters['SSL']) {
+                $Port = 636
+            }
             [System.Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
-            Write-Verbose "[Get-DomainSearcher] Connecting to $($BindServer):636"
-            $Searcher = New-Object -TypeName System.DirectoryServices.Protocols.LdapConnection -ArgumentList "$($BindServer):636"
-            $Searcher.SessionOptions.SecureSocketLayer = $true;
+            Write-Verbose "[Get-DomainSearcher] Connecting to $($BindServer):$($Port)"
+            $Identifier = New-Object System.DirectoryServices.Protocols.LdapDirectoryIdentifier -ArgumentList @($BindServer, $Port)
+            $Searcher = New-Object -TypeName System.DirectoryServices.Protocols.LdapConnection -ArgumentList $Identifier
             $Searcher.SessionOptions.VerifyServerCertificate = { $true }
-            $Searcher.SessionOptions.DomainName = $TargetDomain
-            $Searcher.AuthType = [System.DirectoryServices.Protocols.AuthType]::Negotiate
-            if ($PSBoundParameters['Credential']) {
-                $Searcher.Bind($Credential)
+            $Searcher.SessionOptions.ProtocolVersion = 3
+            if ($PSBoundParameters['Certificate']) {
+                if (-not $PSBoundParameters['CertPassword']) {
+                    $CertPassword = $null
+                }
+                $Cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 @($Certificate, $CertPassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable)
+                [void]$Searcher.ClientCertificates.Add($Cert)
+                $Searcher.SessionOptions.QueryClientCertificate = { $Cert }
+            }
+            if ($PSBoundParameters['SSL']) {
+                $Searcher.SessionOptions.SecureSocketLayer = $true
             }
             else {
+                $Searcher.SessionOptions.StartTransportLayerSecurity($null)
+                $Searcher.AuthType = [System.DirectoryServices.Protocols.AuthType]::External
+            }
+            $Searcher.SessionOptions.DomainName = $TargetDomain
+            if ($PSBoundParameters['Credential'] -and -not $PSBoundParameters['Certificate']) {
+                $Searcher.Bind($Credential)
+            }
+            elseif ($PSBoundParameters['Certificate'] -and -not $PSBoundParameters['SSL']) {
                 $Searcher.Bind()
             }
         }
@@ -5071,6 +5131,14 @@ Switch. Use SSL for the connection to the LDAP server.
 
 Switch. Obfuscate the resulting LDAP filter string using hex encoding.
 
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
 .EXAMPLE
 
 Get-DomainUser -Domain testlab.local
@@ -5273,7 +5341,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SSL,
 
         [Switch]
-        $Obfuscate
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     DynamicParam {
@@ -5300,6 +5374,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
         if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
         if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
 
         $PolicyArguments = @{}
         if ($PSBoundParameters['Domain']) { $PolicyArguments['Domain'] = $Domain }
@@ -5474,19 +5550,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
 
         $Results | Where-Object {$_} | ForEach-Object {
             if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
-                $Prop = @{}
-                foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                    if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor') -or ($a -eq 'logonhours')) {
-                        $Prop[$a] = $_.Attributes[$a]
-                    }
-                    else {
-                        $Values = @()
-                        foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
-                            $Values += [System.Text.Encoding]::UTF8.GetString($v)
-                        }
-                        $Prop[$a] = $Values
-                    }
-                }
+                $Prop = Convert-LdapConnectionAttributes -Attributes $_.Attributes
             }
             else {
                 $Prop = $_.Properties
@@ -6432,6 +6496,14 @@ Switch. Use SSL for the connection to the LDAP server.
 
 Switch. Obfuscate the resulting LDAP filter string using hex encoding.
 
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
 .EXAMPLE
 
 Get-DomainComputer
@@ -6587,7 +6659,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SSL,
 
         [Switch]
-        $Obfuscate
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     DynamicParam {
@@ -6613,6 +6691,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
         if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
         if ($PSBoundParameters['FindOne']) { $SearcherArguments['FindOne'] = $FindOne }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
 
         $DNSearcherArguments = @{}
         if ($PSBoundParameters['Domain']) { $DNSearcherArguments['Domain'] = $Domain }
@@ -6759,19 +6839,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $Results = Invoke-LDAPQuery @SearcherArguments -LDAPFilter "(&(samAccountType=805306369)$Filter)"
         $Results | Where-Object {$_} | ForEach-Object {
             if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
-                $Prop = @{}
-                foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                    if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
-                        $Prop[$a] = $_.Attributes[$a]
-                    }
-                    else {
-                        $Values = @()
-                        foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
-                            $Values += [System.Text.Encoding]::UTF8.GetString($v)
-                        }
-                        $Prop[$a] = $Values
-                    }
-                }
+                $Prop = Convert-LdapConnectionAttributes -Attributes $_.Attributes
             }
             else {
                 $Prop = $_.Properties
@@ -6896,6 +6964,14 @@ Switch. Use SSL for the connection to the LDAP server.
 
 Switch. Obfuscate the resulting LDAP filter string using hex encoding.
 
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
 .EXAMPLE
 
 Get-DomainObject -Domain testlab.local
@@ -7016,7 +7092,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SSL,
 
         [Switch]
-        $Obfuscate
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     DynamicParam {
@@ -7042,6 +7124,8 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['FindOne']) { $SearcherArguments['FindOne'] = $FindOne }
         if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
         if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
     }
 
     PROCESS {
@@ -7128,19 +7212,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
             else {
                 if (Get-Member -inputobject $_ -name "Attributes" -Membertype Properties) {
-                    $Prop = @{}
-                    foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'usercertificate')) {
-                            $Prop[$a] = $_.Attributes[$a]
-                        }
-                        else {
-                            $Values = @()
-                            foreach ($v in $_.Attributes[$a].GetValues([byte[]])) {
-                                $Values += [System.Text.Encoding]::UTF8.GetString($v)
-                            }
-                            $Prop[$a] = $Values
-                        }
-                    }
+                    $Prop = Convert-LdapConnectionAttributes -Attributes $_.Attributes
                 }
                 else {
                     $Prop = $_.Properties
@@ -22942,6 +23014,14 @@ Switch. Use SSL for the connection to the LDAP server.
 
 Switch. Obfuscate the resulting LDAP filter string using hex encoding.
 
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
 .EXAMPLE
 
 Get-DomainDN
@@ -22984,36 +23064,48 @@ A string representing the specified domain distinguished name.
         $SSL,
 
         [Switch]
-        $Obfuscate
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
-    $SearcherArguments = @{
-        'LDAPFilter' = '(userAccountControl:1.2.840.113556.1.4.803:=8192)'
+    BEGIN {
+        $SearcherArguments = @{
+            'LDAPFilter' = '(userAccountControl:1.2.840.113556.1.4.803:=8192)'
+        }
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
     }
-    if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
-    if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
-    if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
-    if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
-    if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
 
-    if ($PSBoundParameters['Domain']) {
-        $DomainDN = "DC=$($Domain -replace '\.',',DC=')"
-    }
-    else {
-        $DCDN = Get-DomainComputer @SearcherArguments -FindOne | Select-Object -First 1 -ExpandProperty distinguishedname
-
-        if ($DCDN) {
-            $DomainDN = $DCDN.SubString($DCDN.IndexOf(',DC=')+1)
+    PROCESS {
+        if ($PSBoundParameters['Domain']) {
+            $DomainDN = "DC=$($Domain -replace '\.',',DC=')"
         }
         else {
-            Write-Verbose "[Get-DomainDN] Error extracting domain DN for '$Domain'"
+            $DCDN = Get-DomainComputer @SearcherArguments -FindOne | Select-Object -First 1 -ExpandProperty distinguishedname
+
+            if ($DCDN) {
+                $DomainDN = $DCDN.SubString($DCDN.IndexOf(',DC=')+1)
+            }
+            else {
+                Write-Verbose "[Get-DomainDN] Error extracting domain DN for '$Domain'"
+            }
         }
-    }
-    if ($DomainDN) {
-        $DomainDN
-    }
-    else {
-        Write-Verbose "[Get-DomainDN] Error resolving domain DN for '$Domain'"
+        if ($DomainDN) {
+            $DomainDN
+        }
+        else {
+            Write-Verbose "[Get-DomainDN] Error resolving domain DN for '$Domain'"
+        }
     }
 }
 
@@ -23307,6 +23399,195 @@ PS Objects representing the specified domain enrollment servers.
     }
 
     Get-DomainObject -SearchBase "CN=Configuration,$DomainDN" -LDAPFilter "(objectCategory=pKIEnrollmentService)" @SearcherArguments
+}
+
+function Get-DomainCertificateTemplate {
+<#
+.SYNOPSIS
+
+Returns the certificate enrollment servers for the current domain or the specified domain.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainObject, Get-DomainDN
+
+.DESCRIPTION
+
+Returns the certificate templates for the current domain or the specified domain by searching
+CN=Configuration,[DomainDN] for (objectCategory=pKIEnrollmentService) as described in
+@harmj0y and @tifkin's Certified_Pre-Owned (https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf).
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SubjectAltRequireDns
+
+The returned templates should have the CT_FLAG_SUBJECT_ALT_REQUIRE_DNS flag.
+
+.PARAMETER MachineType
+
+The returned templates should have the CT_FLAG_MACHINE_TYPE flag.
+
+.PARAMETER AutoEnrollment
+
+The returned templates should have the CT_FLAG_AUTO_ENROLLMENT flag.
+
+.PARAMETER NoSecurityExtension
+
+The returned templates should have the CT_FLAG_NO_SECURITY_EXTENSION flag.
+
+.PARAMETER EnrolleeSuppliesSubject
+
+The returned templates allows the enrollee to supply the certificate subject.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.PARAMETER Raw
+
+Switch. Return raw results instead of translating the fields into a custom PSObject.
+
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
+.EXAMPLE
+
+Get-DomainCertificateTemplate
+
+.EXAMPLE
+
+Get-DomainCertificateTemplate -Domain testlab.local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Get-DomainEnrollmentServers -Credential $Cred
+
+.OUTPUTS
+
+PS Objects representing the specified domain enrollment servers.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
+    [OutputType([String])]
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Switch]
+        $SubjectAltRequireDns,
+
+        [Switch]
+        $MachineType,
+
+        [Switch]
+        $AutoEnrollment,
+
+        [Switch]
+        $NoSecurityExtension,
+
+        [Switch]
+        $EnrolleeSuppliesSubject,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $Raw,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
+    )
+
+    BEGIN {
+        $DNArguments = @{}
+        if ($PSBoundParameters['Domain']) { $DNArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $DNArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $DNArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $DNArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) { $DNArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Certificate']) {$DNArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$DNArguments['CertPassword'] = $CertPassword }
+
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) { $SearcherArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Raw']) { $SearcherArguments['Raw'] = $Raw }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
+    }
+
+    PROCESS {
+        $DomainDN = Get-DomainDN @DNArguments
+
+        if ($DomainDN) {
+            Write-Verbose "[Get-DomainEnrollmentServers] Got domain DN: $DomainDN"
+        }
+        else {
+            Write-Verbose "[Get-DomainEnrollmentServers] Error extracting domain DN for '$Domain'"
+        }
+
+        $Filter = ""
+
+        if ($PSBoundParameters['SubjectAltRequireDns']) {
+            $Filter += "(mspki-certificate-name-flag:1.2.840.113556.1.4.804:=134217728)"
+        }
+        if ($PSBoundParameters['MachineType']) {
+            $Filter += "(flags:1.2.840.113556.1.4.804:=64)"
+        }
+        if ($PSBoundParameters['AutoEnrollment']) {
+            $Filter += "(flags:1.2.840.113556.1.4.804:=32)"
+        }
+        if ($PSBoundParameters['NoSecurityExtension']) {
+            $Filter += "(mspki-enrollment-flag:1.2.840.113556.1.4.804:=32768)"
+        }
+        if ($PSBoundParameters['EnrolleeSuppliesSubject']) {
+            $Filter += "(mspki-certificate-name-flag:1.2.840.113556.1.4.804:=1)"
+        }
+
+        Get-DomainObject -SearchBase "CN=Configuration,$DomainDN" -LDAPFilter "(&(objectclass=pkicertificatetemplate)$($Filter))" @SearcherArguments
+    }
 }
 
 function Get-DomainCACertificates {
@@ -23827,7 +24108,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
 
         [ValidateRange(1, 10000)]
         [Int]
-        $ResultPageSize = 200,
+        $ResultPageSize = 1000,
 
         [ValidateRange(1, 10000)]
         [Int]
@@ -23855,7 +24136,13 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         $SSL,
 
         [Switch]
-        $Obfuscate
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     BEGIN {
@@ -23872,24 +24159,27 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['Owner']) { $SearcherArguments['SecurityMasks'] = 'Owner' }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
     }
 
     PROCESS {
         if ($PSBoundParameters['Obfuscate']) {
             $LDAPFilter = Get-ObfuscatedFilterString -LDAPFilter $LDAPFilter
         }
-        if ($PSBoundParameters['SSL']) {
-            $MaxResultsToRequest = 1000
+        if ($PSBoundParameters['SSL'] -or $PSBoundParameters['Certificate']) {
             $Results = @()
-            $Searcher = Get-DomainSearcher @SearcherArguments -SSL
+            $Searcher = Get-DomainSearcher @SearcherArguments
 
-            $Request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest
-            $PageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $MaxResultsToRequest
+            $Request = New-Object System.DirectoryServices.Protocols.SearchRequest
+            $PageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $ResultPageSize
+            [void]$Request.Controls.Add($PageRequestControl)
 
             # for returning ntsecuritydescriptor
             if ($PSBoundParameters['SecurityMasks']) {
                 $SDFlagsControl = New-Object -TypeName System.DirectoryServices.Protocols.SecurityDescriptorFlagControl -ArgumentList $SecurityMasks
-                $Request.Controls.Add($SDFlagsControl)
+                [void]$Request.Controls.Add($SDFlagsControl)
             }
 
             if ($PSBoundParameters['SearchBase']) {
@@ -23903,14 +24193,14 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             if ($PSBoundParameters['SearchScope']) {
                 $Request.Scope = $SearchScope
             }
-            $Request.Controls.Add($PageRequestControl)
             if ($LdapFilter -and $LdapFilter -ne '') {
                 $Request.Filter = "$LdapFilter"
             }
 
             while($true) {
+                Write-Verbose "[Invoke-LDAPQuery] Sending Request"
                 $Response = $Searcher.SendRequest($Request)
-                if ($Response.ResultCode -eq 'Success') {
+                if ($Response.Entries.Count -gt 0) {
                     foreach ($entry in $response.Entries) {
                         $Results += $entry
                         if ($PSBoundParameters['FindOne']) {
@@ -23922,7 +24212,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                     break
                 }
 
-                $PageResponseControl = [System.DirectoryServices.Protocols.PageResultResponseControl]$Response.Controls[0]
+                $PageResponseControl = $Response.Controls | Where-Object {$_.Type -eq "1.2.840.113556.1.4.319"}
                 if ($PageResponseControl.Cookie.Length -eq 0) {
                     break
                 }
@@ -24725,6 +25015,93 @@ DateTime
 }
 
 
+function Convert-LdapConnectionAttributes {
+<#
+.SYNOPSIS
+
+Converts Attributes property from an LdapConnection SearchResult.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Enumerate users using remote registry.
+
+.PARAMETER Attributes
+
+Attributes to convert
+
+.EXAMPLE
+
+Convert-LdapConnectionAttributes -Attributes $_.Attributes
+
+.INPUTS
+
+Hashtable
+
+.OUTPUTS
+
+Hashtable
+#>
+    [OutputType('Hashtable')]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Hashtable]
+        $Attributes
+    )
+
+    BEGIN {
+        $DontConvert = @(
+            'objectsid'
+            'sidhistory'
+            'objectguid'
+            'usercertificate'
+            'ntsecuritydescriptor'
+            'logonhours'
+            'accountexpires'
+            'pwdlastset'
+            'badpasswordtime'
+            'lastlogontimestamp'
+            'lastlogoff'
+            'lastlogon'
+            'lockouttime'
+            'schemaidguid'
+            'attributesecurityguid'
+            'pkioverlapperiod'
+            'pkiexpirationperiod'
+        )
+    }
+
+    PROCESS {
+        $Prop = @{}
+        foreach ($a in $Attributes.Keys | Sort-Object) {
+            if ($DontConvert -contains $a) {
+                $Prop[$a] = $Attributes[$a]
+            }
+            elseif ($a -eq 'whenchanged' -or $a -eq 'whencreated' -or $a -eq 'dscorepropagationdata') {
+                $Values = @()
+                $timeAttr = $Attributes[$a].GetValues("string")
+                foreach ($item in $timeAttr) {
+                    $newTime = New-Object DateTime
+                    if ([datetime]::TryParseExact($item.Substring(0,$item.Length - 3), "yyyyMMddHHmmss", $null, [System.Globalization.DateTimeStyles]::None, [ref]$newTime))
+                    {
+                        $Values += $newTime
+                    }
+                }
+                $Prop[$a] = $Values
+            }
+            else {
+                $Prop[$a] = $Attributes[$a].GetValues("string")
+            }
+        }
+        $Prop
+    }
+}
+
+
 
 ########################################################
 #
@@ -24859,6 +25236,127 @@ $SID_NAME_USE = psenum $Mod SID_NAME_USE UInt16 @{
     SidTypeUnknown          = 8
     SidTypeComputer         = 9
 }
+
+# used to parse the 'systemflags' property for schema objects
+$SystemFlagsEnum = psenum $Mod PowerView.SystemFlagsEnum UInt32 @{
+    ATTR_NOT_REPLICATED          =   '0x00000001'
+    ATTR_REQ_PARTIAL_SET_MEMBER  =   '0x00000002'
+    ATTR_IS_CONSTRUCTED          =   '0x00000004'
+    ATTR_IS_OPERATIONAL          =   '0x00000008'
+    SCHEMA_BASE_OBJECT           =   '0x00000010'
+    ATTR_IS_RDN                  =   '0x00000020'
+    DISALLOW_MOVE_ON_DELETE      =   '0x02000000'
+    DOMAIN_DISALLOW_MOVE         =   '0x04000000'
+    DOMAIN_DISALLOW_RENAME       =   '0x08000000'
+    CONFIG_ALLOW_LIMITED_MOVE    =   '0x10000000'
+    CONFIG_ALLOW_MOVE            =   '0x20000000'
+    CONFIG_ALLOW_RENAME          =   '0x40000000'
+    DISALLOW_DELETE              =   '0x80000000'
+} -Bitfield
+
+# used to parse the 'schemaFlagsEx' property for schema attributes
+$SchemaFlagsExEnum = psenum $Mod PowerView.SchemaFlagsExEnum UInt32 @{
+    ATTR_IS_CRITICAL          =   '0x00000001'
+} -Bitfield
+
+# used to parse the 'searchflags' property for schema attributes
+$SearchFlagsExEnum = psenum $Mod PowerView.SearchFlagsExEnum UInt32 @{
+    ATTINDEX              =   '0x00000001'
+    PDNTATTINDEX          =   '0x00000002'
+    ANR                   =   '0x00000004'
+    PRESERVEONDELETE      =   '0x00000008'
+    COPY                  =   '0x00000010'
+    TUPLEINDEX            =   '0x00000020'
+    SUBTREEATTINDEX       =   '0x00000040'
+    CONFIDENTIAL          =   '0x00000080'
+    NEVERVALUEAUDIT       =   '0x00000100'
+    RODCFilteredAttribute =   '0x00000200'
+    EXTENDEDLINKTRACKING  =   '0x00000400'
+    BASEONLY              =   '0x00000800'
+    PARTITIONSECRET       =   '0x00001000'
+} -Bitfield
+
+# used to parse the 'instanceType' property for domain objects
+$InstanceTypeEnum = psenum $Mod PowerView.InstanceTypeEnum UInt32 @{
+    HEAD_OF_NC               =   '0x00000001'
+    REPLICA_NOT_INSTANTIATED =   '0x00000002'
+    WRITABLE                 =   '0x00000004'
+    ABOVE_NC_IS_HELD         =   '0x00000008'
+    NC_BEING_CONSTRUCTED     =   '0x00000010'
+    NC_BEING_REMOVED         =   '0x00000020'
+} -Bitfield
+
+# used to parse the 'mspki-certificate-name-flag' property for certificate templates
+$CertNameFlagEnum = psenum $Mod PowerView.CertNameFlagEnum UInt32 @{
+    ENROLLEE_SUPPLIES_SUBJECT              =   '0x00000001'
+    OLD_CERT_SUPPLIES_SUBJECT_AND_ALT_NAME =   '0x00000008'
+    ENROLLEE_SUPPLIES_SUBJECT_ALT_NAME     =   '0x00010000'
+    SUBJECT_ALT_REQUIRE_DOMAIN_DNS         =   '0x00400000'
+    SUBJECT_ALT_REQUIRE_SPN                =   '0x00800000'
+    SUBJECT_ALT_REQUIRE_DIRECTORY_GUID     =   '0x01000000'
+    SUBJECT_ALT_REQUIRE_UPN                =   '0x02000000'
+    SUBJECT_ALT_REQUIRE_EMAIL              =   '0x04000000'
+    SUBJECT_ALT_REQUIRE_DNS                =   '0x08000000'
+    SUBJECT_REQUIRE_DNS_AS_CN              =   '0x10000000'
+    SUBJECT_REQUIRE_EMAIL                  =   '0x20000000'
+    SUBJECT_REQUIRE_COMMON_NAME            =   '0x40000000'
+    SUBJECT_REQUIRE_DIRECTORY_PATH         =   '0x80000000'
+} -Bitfield
+
+# used to parse the 'flags' property for certificate templates
+$CertFlagsEnum = psenum $Mod PowerView.CertFlagsEnum UInt32 @{
+    ADD_EMAIL         =   '0x00000002'
+    PUBLISH_TO_DS     =   '0x00000008'
+    EXPORTABLE_KEY    =   '0x00000010'
+    AUTO_ENROLLMENT   =   '0x00000020'
+    MACHINE_TYPE      =   '0x00000040'
+    IS_CA             =   '0x00000080'
+    ADD_TEMPLATE_NAME =   '0x00000200'
+    DONOTPERSISTINDB  =   '0x00000400'
+    IS_CROSS_CA       =   '0x00000800'
+    IS_DEFAULT        =   '0x00010000'
+    IS_MODIFIED       =   '0x00020000'
+} -Bitfield
+
+# used to parse the 'mspki-enrollment-flag' property for certificate templates
+$CertEnrollmentFlagEnum = psenum $Mod PowerView.CertEnrollmentFlagEnum UInt32 @{
+    INCLUDE_SYMMETRIC_ALGORITHMS                                  =   '0x00000001'
+    PEND_ALL_REQUESTS                                             =   '0x00000002'
+    PUBLISH_TO_KRA_CONTAINER                                      =   '0x00000004'
+    PUBLISH_TO_DS                                                 =   '0x00000008'
+    AUTO_ENROLLMENT_CHECK_USER_DS_CERTIFICATE                     =   '0x00000010'
+    AUTO_ENROLLMENT                                               =   '0x00000020'
+    PREVIOUS_APPROVAL_VALIDATE_REENROLLMENT                       =   '0x00000040'
+    USER_INTERACTION_REQUIRED                                     =   '0x00000100'
+    REMOVE_INVALID_CERTIFICATE_FROM_PERSONAL_STORE                =   '0x00000400'
+    ALLOW_ENROLL_ON_BEHALF_OF                                     =   '0x00008000'
+    ADD_OCSP_NOCHECK                                              =   '0x00010000'
+    ENABLE_KEY_REUSE_ON_NT_TOKEN_KEYSET_STORAGE_FULL              =   '0x00002000'
+    NOREVOCATIONINFOINISSUEDCERTS                                 =   '0x00004000'
+    INCLUDE_BASIC_CONSTRAINTS_FOR_EE_CERTS                        =   '0x00008000'
+    ALLOW_PREVIOUS_APPROVAL_KEYBASEDRENEWAL_VALIDATE_REENROLLMENT =   '0x00010000'
+    ISSUANCE_POLICIES_FROM_REQUEST                                =   '0x00020000'
+    SKIP_AUTO_RENEWAL                                             =   '0x00040000'
+    NO_SECURITY_EXTENSION                                         =   '0x00080000'
+} -Bitfield
+
+# used to parse the 'mspki-private-key-flag' property for certificate templates
+$CertPrivKeyFlagEnum = psenum $Mod PowerView.CertPrivKeyFlagEnum UInt32 @{
+    ATTEST_NONE                            =   '0x00000000'
+    REQUIRE_PRIVATE_KEY_ARCHIVAL           =   '0x00000001'
+    EXPORTABLE_KEY                         =   '0x00000010'
+    STRONG_KEY_PROTECTION_REQUIRED         =   '0x00000020'
+    REQUIRE_ALTERNATE_SIGNATURE_ALGORITHM  =   '0x00000040'
+    REQUIRE_SAME_KEY_RENEWAL               =   '0x00000080'
+    USE_LEGACY_PROVIDER                    =   '0x00000100'
+    EK_TRUST_ON_USE                        =   '0x00000200'
+    EK_VALIDATE_CERT                       =   '0x00000400'
+    EK_VALIDATE_KEY                        =   '0x00000800'
+    ATTEST_PREFERRED                       =   '0x00001000'
+    ATTEST_REQUIRED                        =   '0x00002000'
+    ATTESTATION_WITHOUT_POLICY             =   '0x00004000'
+    HELLO_LOGON_KEY                        =   '0x00200000'
+} -Bitfield
 
 # the NetLocalGroupEnum result structure
 $LOCALGROUP_INFO_1 = struct $Mod LOCALGROUP_INFO_1 @{
