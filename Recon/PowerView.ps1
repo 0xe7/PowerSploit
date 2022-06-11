@@ -3239,6 +3239,9 @@ A custom PSObject with LDAP hashtable properties translated.
                     $ObjectProperties['SystemAcl'] = $Descriptor.SystemAcl
                 }
             }
+            elseif ($_ -eq 'defaultsecuritydescriptor') {
+                $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0]
+            }
             elseif ($_ -eq 'accountexpires') {
                 if ($Properties[$_][0] -gt [DateTime]::MaxValue.Ticks) {
                     $ObjectProperties[$_] = "NEVER"
@@ -3472,10 +3475,15 @@ System.DirectoryServices.DirectorySearcher
         $CertPassword
     )
 
-    PROCESS {
-        if ($PSBoundParameters['Domain']) {
-            $TargetDomain = $Domain
+    BEGIN {
+        $DomainNameArguments = @{}
+        if ($PSBoundParameters['Domain']) { $DomainNameArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Credential']) { $DomainNameArguments['Credential'] = $Credential }
+    }
 
+    PROCESS {
+        $TargetDomain = Get-TargetDomainName @DomainNameArguments
+        if ($PSBoundParameters['Domain']) {
             if ($ENV:USERDNSDOMAIN -and ($ENV:USERDNSDOMAIN.Trim() -ne '')) {
                 # see if we can grab the user DNS logon domain from environment variables
                 $UserDomain = $ENV:USERDNSDOMAIN
@@ -3488,11 +3496,9 @@ System.DirectoryServices.DirectorySearcher
             # if not -Domain is specified, but -Credential is, try to retrieve the current domain name with Get-Domain
             $DomainObject = Get-Domain -Credential $Credential
             $BindServer = ($DomainObject.PdcRoleOwner).Name
-            $TargetDomain = $DomainObject.Name
         }
         elseif ($ENV:USERDNSDOMAIN -and ($ENV:USERDNSDOMAIN.Trim() -ne '')) {
             # see if we can grab the user DNS logon domain from environment variables
-            $TargetDomain = $ENV:USERDNSDOMAIN
             if ($ENV:LOGONSERVER -and ($ENV:LOGONSERVER.Trim() -ne '') -and $TargetDomain) {
                 $BindServer = "$($ENV:LOGONSERVER -replace '\\','').$TargetDomain"
             }
@@ -3502,7 +3508,6 @@ System.DirectoryServices.DirectorySearcher
             write-verbose "get-domain"
             $DomainObject = Get-Domain
             $BindServer = ($DomainObject.PdcRoleOwner).Name
-            $TargetDomain = $DomainObject.Name
         }
 
         if ($PSBoundParameters['Server']) {
@@ -3525,6 +3530,7 @@ System.DirectoryServices.DirectorySearcher
             $Searcher = New-Object -TypeName System.DirectoryServices.Protocols.LdapConnection -ArgumentList $Identifier
             $Searcher.SessionOptions.VerifyServerCertificate = { $true }
             $Searcher.SessionOptions.ProtocolVersion = 3
+            $Searcher.SessionOptions.ReferralChasing = 'None'
             if ($PSBoundParameters['Certificate']) {
                 if (-not $PSBoundParameters['CertPassword']) {
                     $CertPassword = $null
@@ -3540,11 +3546,11 @@ System.DirectoryServices.DirectorySearcher
                 $Searcher.SessionOptions.StartTransportLayerSecurity($null)
                 $Searcher.AuthType = [System.DirectoryServices.Protocols.AuthType]::External
             }
-            $Searcher.SessionOptions.DomainName = $TargetDomain
+            #$Searcher.SessionOptions.DomainName = $TargetDomain
             if ($PSBoundParameters['Credential'] -and -not $PSBoundParameters['Certificate']) {
                 $Searcher.Bind($Credential)
             }
-            elseif ($PSBoundParameters['Certificate'] -and -not $PSBoundParameters['SSL']) {
+            elseif ($PSBoundParameters['Certificate']) {
                 $Searcher.Bind()
             }
         }
@@ -5597,9 +5603,11 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 $User
             }
         }
-        if ($Results) {
+        if ($Results -and -not $PSBoundParameters['SSL'] -and -not $PSBoundParameters['Certificate']) {
             try { $Results.dispose() }
-            catch { }
+            catch {
+                Write-Verbose "[Get-DomainUser] Error disposing of the Results object: $_"
+            }
         }
     }
 }
@@ -6862,7 +6870,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 $Computer
             }
         }
-        if ($Results) {
+        if ($Results -and -not $PSBoundParameters['SSL'] -and -not $PSBoundParameters['Certificate']) {
             try { $Results.dispose() }
             catch {
                 Write-Verbose "[Get-DomainComputer] Error disposing of the Results object: $_"
@@ -7223,7 +7231,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
             $Object
         }
-        if ($Results) {
+        if ($Results -and -not $PSBoundParameters['SSL'] -and -not $PSBoundParameters['Certificate']) {
             try { $Results.dispose() }
             catch {
                 Write-Verbose "[Get-DomainObject] Error disposing of the Results object: $_"
@@ -7785,6 +7793,22 @@ Switch. Specifies that the searcher should also return deleted/tombstoned object
 A [Management.Automation.PSCredential] object of alternate credentials
 for connection to the target domain.
 
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
 .EXAMPLE
 
 Set-DomainObject testuser -Set @{'mstsinitialprogram'='\\EVIL\program.exe'} -Verbose
@@ -7828,7 +7852,7 @@ Set-DomainObject -Identity testuser -XOR @{useraccountcontrol=65536} -Verbose
 VERBOSE: Get-DomainSearcher search string: LDAP://PRIMARY.testlab.local/DC=testlab,DC=local
 VERBOSE: Get-DomainObject filter string: (&(|(samAccountName=testuser)))
 VERBOSE: XORing 'useraccountcontrol' with '65536' for object 'testuser'
-
+program2
 Get-DomainUser testuser | ConvertFrom-UACValue -Verbose
 
 Name                           Value
@@ -7919,11 +7943,23 @@ scriptpath
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
     )
 
     BEGIN {
-        $SearcherArguments = @{'Raw' = $True}
+        $SearcherArguments = @{}
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['LDAPFilter']) { $SearcherArguments['LDAPFilter'] = $LDAPFilter }
         if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
@@ -7936,56 +7972,102 @@ scriptpath
     }
 
     PROCESS {
-        if ($PSBoundParameters['Identity']) { $SearcherArguments['Identity'] = $Identity }
 
-        # splat the appropriate arguments to Get-DomainObject
-        $RawObject = Get-DomainObject @SearcherArguments
+        if ($PSBoundParameters['SSL'] -or $PSBoundParameters['Certificate']) {
+            if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+            if ($PSBoundParameters['Certificate']) { $SearcherArguments['Certificate'] = $Certificate }
+            if ($PSBoundParameters['CertPassword']) { $SearcherArguments['CertPassword'] = $CertPassword }
 
-        ForEach ($Object in $RawObject) {
+            $ObjectArguments = $SearcherArguments.Clone()
 
-            $Entry = $RawObject.GetDirectoryEntry()
+            if ($PSBoundParameters['Identity']) { $ObjectArguments['Identity'] = $Identity }
+            if ($PSBoundParameters['Obfuscate']) { $ObjectArguments['Obfuscate'] = $Obfuscate }
+            $ObjectArguments['Raw'] = $True
 
-            if($PSBoundParameters['Set']) {
-                try {
-                    $PSBoundParameters['Set'].GetEnumerator() | ForEach-Object {
-                        Write-Verbose "[Set-DomainObject] Setting '$($_.Name)' to '$($_.Value)' for object '$($RawObject.Properties.samaccountname)'"
-                        $Entry.put($_.Name, $_.Value)
+            $Results = Get-DomainObject @ObjectArguments
+
+            $Searcher = Get-DomainSearcher @SearcherArguments
+
+            foreach ($Result in $Results) {
+                $ObjectDN = $Result.DistinguishedName
+
+                if($PSBoundParameters['Set']) {
+                    $Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
+
+                    try {
+                        $PSBoundParameters['Set'].GetEnumerator() | ForEach-Object {
+                            Write-Verbose "[Set-DomainObject] Setting '$($_.Name)' to '$($_.Value)' for object '$($ObjectDN)'"
+                            $ModifyRequest = New-Object System.DirectoryServices.Protocols.ModifyRequest @($ObjectDN, $Operation, $_.Name, $_.Value)
+                            [void]$Searcher.SendRequest($ModifyRequest)
+                        }
                     }
-                    $Entry.commitchanges()
-                }
-                catch {
-                    Write-Warning "[Set-DomainObject] Error setting/replacing properties for object '$($RawObject.Properties.samaccountname)' : $_"
+                    catch {
+                        Write-Warning "[Set-DomainObject] Error setting/replacing properties for object '$($ObjectDN)' : $_"
+                    }
                 }
             }
-            if($PSBoundParameters['XOR']) {
-                try {
-                    $PSBoundParameters['XOR'].GetEnumerator() | ForEach-Object {
-                        $PropertyName = $_.Name
-                        $PropertyXorValue = $_.Value
-                        Write-Verbose "[Set-DomainObject] XORing '$PropertyName' with '$PropertyXorValue' for object '$($RawObject.Properties.samaccountname)'"
-                        $TypeName = $Entry.$PropertyName[0].GetType().name
 
-                        # UAC value references- https://support.microsoft.com/en-us/kb/305144
-                        $PropertyValue = $($Entry.$PropertyName) -bxor $PropertyXorValue
-                        $Entry.$PropertyName = $PropertyValue -as $TypeName
-                    }
-                    $Entry.commitchanges()
-                }
-                catch {
-                    Write-Warning "[Set-DomainObject] Error XOR'ing properties for object '$($RawObject.Properties.samaccountname)' : $_"
-                }
+            try {
+                $Searcher.Dispose()
             }
-            if($PSBoundParameters['Clear']) {
-                try {
-                    $PSBoundParameters['Clear'] | ForEach-Object {
-                        $PropertyName = $_
-                        Write-Verbose "[Set-DomainObject] Clearing '$PropertyName' for object '$($RawObject.Properties.samaccountname)'"
-                        $Entry.$PropertyName.clear()
+            catch {
+                Write-Verbose "[Set-DomainObject] Error disposing of the connection object: $_"
+            }
+        }
+        else {
+            if ($PSBoundParameters['Identity']) { $SearcherArguments['Identity'] = $Identity }
+            if ($PSBoundParameters['Obfuscate']) { $SearcherArguments['Obfuscate'] = $Obfuscate }
+
+            $SearcherArguments['Raw'] = $True
+            # splat the appropriate arguments to Get-DomainObject
+            $RawObject = Get-DomainObject @SearcherArguments
+
+            ForEach ($Object in $RawObject) {
+
+                $Entry = $RawObject.GetDirectoryEntry()
+
+                if($PSBoundParameters['Set']) {
+                    try {
+                        $PSBoundParameters['Set'].GetEnumerator() | ForEach-Object {
+                            Write-Verbose "[Set-DomainObject] Setting '$($_.Name)' to '$($_.Value)' for object '$($RawObject.Properties.samaccountname)'"
+                            $Entry.put($_.Name, $_.Value)
+                        }
+                        $Entry.commitchanges()
                     }
-                    $Entry.commitchanges()
+                    catch {
+                        Write-Warning "[Set-DomainObject] Error setting/replacing properties for object '$($RawObject.Properties.samaccountname)' : $_"
+                    }
                 }
-                catch {
-                    Write-Warning "[Set-DomainObject] Error clearing properties for object '$($RawObject.Properties.samaccountname)' : $_"
+                if($PSBoundParameters['XOR']) {
+                    try {
+                        $PSBoundParameters['XOR'].GetEnumerator() | ForEach-Object {
+                            $PropertyName = $_.Name
+                            $PropertyXorValue = $_.Value
+                            Write-Verbose "[Set-DomainObject] XORing '$PropertyName' with '$PropertyXorValue' for object '$($RawObject.Properties.samaccountname)'"
+                            $TypeName = $Entry.$PropertyName[0].GetType().name
+
+                            # UAC value references- https://support.microsoft.com/en-us/kb/305144
+                            $PropertyValue = $($Entry.$PropertyName) -bxor $PropertyXorValue
+                            $Entry.$PropertyName = $PropertyValue -as $TypeName
+                        }
+                        $Entry.commitchanges()
+                    }
+                    catch {
+                        Write-Warning "[Set-DomainObject] Error XOR'ing properties for object '$($RawObject.Properties.samaccountname)' : $_"
+                    }
+                }
+                if($PSBoundParameters['Clear']) {
+                    try {
+                        $PSBoundParameters['Clear'] | ForEach-Object {
+                            $PropertyName = $_
+                            Write-Verbose "[Set-DomainObject] Clearing '$PropertyName' for object '$($RawObject.Properties.samaccountname)'"
+                            $Entry.$PropertyName.clear()
+                        }
+                        $Entry.commitchanges()
+                    }
+                    catch {
+                        Write-Warning "[Set-DomainObject] Error clearing properties for object '$($RawObject.Properties.samaccountname)' : $_"
+                    }
                 }
             }
         }
@@ -23502,6 +23584,9 @@ PS Objects representing the specified domain enrollment servers.
         [String]
         $Server,
 
+        [String]
+        $Name,
+
         [Switch]
         $SubjectAltRequireDns,
 
@@ -23570,6 +23655,9 @@ PS Objects representing the specified domain enrollment servers.
 
         $Filter = ""
 
+        if ($PSBoundParameters['Name']) {
+            $Filter += "(name=$($Name))"
+        }
         if ($PSBoundParameters['SubjectAltRequireDns']) {
             $Filter += "(mspki-certificate-name-flag:1.2.840.113556.1.4.804:=134217728)"
         }
@@ -24162,6 +24250,10 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
         if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
         if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
         if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
+
+        $DomainNameArguments = @{}
+        if ($PSBoundParameters['Domain']) { $DomainNameArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Credential']) { $DomainNameArguments['Credential'] = $Credential }
     }
 
     PROCESS {
@@ -24173,12 +24265,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             $Searcher = Get-DomainSearcher @SearcherArguments
 
             $Request = New-Object System.DirectoryServices.Protocols.SearchRequest
-            $PageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $ResultPageSize
+            $PageRequestControl = New-Object System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $ResultPageSize
             [void]$Request.Controls.Add($PageRequestControl)
 
             # for returning ntsecuritydescriptor
             if ($PSBoundParameters['SecurityMasks']) {
-                $SDFlagsControl = New-Object -TypeName System.DirectoryServices.Protocols.SecurityDescriptorFlagControl -ArgumentList $SecurityMasks
+                $SDFlagsControl = New-Object System.DirectoryServices.Protocols.SecurityDescriptorFlagControl -ArgumentList $SecurityMasks
                 [void]$Request.Controls.Add($SDFlagsControl)
             }
 
@@ -24186,7 +24278,7 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 $Request.DistinguishedName = $SearchBase
             }
             else {
-                $TargetDomain = $Searcher.SessionOptions.DomainName
+                $TargetDomain = Get-TargetDomainName @DomainNameArguments
                 $DomainDN = "DC=$($TargetDomain.Replace('.',',DC='))"
                 $Request.DistinguishedName = $DomainDN
             }
@@ -24198,7 +24290,6 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
             }
 
             while($true) {
-                Write-Verbose "[Invoke-LDAPQuery] Sending Request"
                 $Response = $Searcher.SendRequest($Request)
                 if ($Response.Entries.Count -gt 0) {
                     foreach ($entry in $response.Entries) {
@@ -24217,6 +24308,12 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                     break
                 }
                 $PageRequestControl.Cookie = $PageResponseControl.Cookie
+            }
+            try {
+                $Searcher.Dispose()
+            }
+            catch {
+                Write-Verbose "[Invoke-LDAPQuery] Error disposing of the connection object: $_"
             }
         }
         else {
@@ -25072,6 +25169,7 @@ Hashtable
             'attributesecurityguid'
             'pkioverlapperiod'
             'pkiexpirationperiod'
+            'ms-ds-consistencyguid'
         )
     }
 
@@ -25098,6 +25196,79 @@ Hashtable
             }
         }
         $Prop
+    }
+}
+
+function Get-TargetDomainName {
+<#
+.SYNOPSIS
+
+Gets the target domain name.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Gets the target domain name.
+
+.PARAMETER Domain
+
+Domain name.
+
+.PARAMETER Credential
+
+Credentials being used.
+
+.EXAMPLE
+
+Get-TargetDomainName
+
+.INPUTS
+
+String
+Management.Automation.PSCredential
+
+.OUTPUTS
+
+String
+#>
+    [OutputType('String')]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [String]
+        $Domain,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    BEGIN {
+    }
+
+    PROCESS {
+        if ($PSBoundParameters['Domain']) {
+            $TargetDomain = $Domain
+        }
+        elseif ($PSBoundParameters['Credential']) {
+            # if not -Domain is specified, but -Credential is, try to retrieve the current domain name with Get-Domain
+            $DomainObject = Get-Domain -Credential $Credential
+            $TargetDomain = $DomainObject.Name
+        }
+        elseif ($ENV:USERDNSDOMAIN -and ($ENV:USERDNSDOMAIN.Trim() -ne '')) {
+            # see if we can grab the user DNS logon domain from environment variables
+            $TargetDomain = $ENV:USERDNSDOMAIN
+        }
+        else {
+            # otherwise, resort to Get-Domain to retrieve the current domain object
+            write-verbose "get-domain"
+            $DomainObject = Get-Domain
+            $TargetDomain = $DomainObject.Name
+        }
+        $TargetDomain
     }
 }
 
