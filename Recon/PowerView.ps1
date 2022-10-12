@@ -3221,6 +3221,15 @@ A custom PSObject with LDAP hashtable properties translated.
             elseif ($_ -eq 'mspki-private-key-flag') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $CertPrivKeyFlagEnum
             }
+            elseif ($_ -eq 'trustattributes') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $TrustAttributesEnum
+            }
+            elseif ($_ -eq 'trusttype') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $DsDomainTrustType
+            }
+            elseif ($_ -eq 'trustdirection') {
+                $ObjectProperties[$_] = $Properties[$_][0] -as $TrustDirectionEnum
+            }
             elseif ($_ -eq 'ntsecuritydescriptor') {
                 # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
                 $Descriptor = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
@@ -3472,7 +3481,10 @@ System.DirectoryServices.DirectorySearcher
         $Certificate,
 
         [String]
-        $CertPassword
+        $CertPassword,
+
+        [Switch]
+        $RootDSE
     )
 
     BEGIN {
@@ -3515,7 +3527,7 @@ System.DirectoryServices.DirectorySearcher
             $BindServer = $Server
         }
 
-        if ($PSBoundParameters['SSL'] -or $PSBoundParameters['Certificate']) {
+        if ($PSBoundParameters['SSL'] -or $PSBoundParameters['Certificate'] -or $PSBoundParameters['RootDSE']) {
             if ([string]::IsNullOrEmpty($BindServer)) {
                 $DomainObject = Get-Domain
                 $BindServer = ($DomainObject.PdcRoleOwner).Name
@@ -3542,15 +3554,14 @@ System.DirectoryServices.DirectorySearcher
             if ($PSBoundParameters['SSL']) {
                 $Searcher.SessionOptions.SecureSocketLayer = $true
             }
-            else {
+            elseif ($PSBoundParameters['Certificate']) {
                 $Searcher.SessionOptions.StartTransportLayerSecurity($null)
                 $Searcher.AuthType = [System.DirectoryServices.Protocols.AuthType]::External
             }
-            #$Searcher.SessionOptions.DomainName = $TargetDomain
             if ($PSBoundParameters['Credential'] -and -not $PSBoundParameters['Certificate']) {
                 $Searcher.Bind($Credential)
             }
-            elseif ($PSBoundParameters['Certificate']) {
+            else {
                 $Searcher.Bind()
             }
         }
@@ -7990,6 +8001,7 @@ scriptpath
 
             foreach ($Result in $Results) {
                 $ObjectDN = $Result.DistinguishedName
+                Write-Verbose "[Set-DomainObject] Using object DN: $($ObjectDN)"
 
                 if($PSBoundParameters['Set']) {
                     $Operation = [System.DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace
@@ -25179,7 +25191,7 @@ Hashtable
             if ($DontConvert -contains $a) {
                 $Prop[$a] = $Attributes[$a]
             }
-            elseif ($a -eq 'whenchanged' -or $a -eq 'whencreated' -or $a -eq 'dscorepropagationdata') {
+            elseif ($a -eq 'whenchanged' -or $a -eq 'whencreated' -or $a -eq 'dscorepropagationdata' -or $a -eq 'currenttime') {
                 $Values = @()
                 $timeAttr = $Attributes[$a].GetValues("string")
                 foreach ($item in $timeAttr) {
@@ -25268,7 +25280,86 @@ String
             $DomainObject = Get-Domain
             $TargetDomain = $DomainObject.Name
         }
+        Write-Verbose "[Get-TargetDomainName] Using domain name $($TargetDomain)"
         $TargetDomain
+    }
+}
+
+function Get-RootDSE {
+<#
+.SYNOPSIS
+
+Gets the rootdse configuration.
+
+Author: Charlie Clark (@exploitph)
+License: BSD 3-Clause
+Required Dependencies: 
+
+.DESCRIPTION
+
+Gets the rootdse configuration.
+
+.PARAMETER Domain
+
+Domain name.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to for the search.
+
+.PARAMETER Credential
+
+Credentials being used.
+
+.EXAMPLE
+
+Get-RootDSE
+
+.INPUTS
+
+String
+Management.Automation.PSCredential
+
+.OUTPUTS
+
+String
+#>
+    [OutputType('String')]
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    BEGIN {
+        $SearcherArguments = @{
+            'RootDSE' = $True
+        }
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+    }
+
+    PROCESS {
+        $Searcher = Get-DomainSearcher @SearcherArguments
+        $Request = New-Object System.DirectoryServices.Protocols.SearchRequest
+        $Request.Filter = '(objectClass=*)'
+        $Request.DistinguishedName = $null
+        $Request.Scope = 'Base'
+
+        $Response = $Searcher.SendRequest($Request)
+
+        Convert-LdapConnectionAttributes -Attributes $Response.Entries[0].Attributes
     }
 }
 
@@ -25558,14 +25649,40 @@ $DsDomainTrustType = psenum $Mod DsDomain.TrustType UInt32 @{
     DCE         = 4
 }
 $DsDomainTrustAttributes = psenum $Mod DsDomain.TrustAttributes UInt32 @{
-    NON_TRANSITIVE      = 1
-    UPLEVEL_ONLY        = 2
-    FILTER_SIDS         = 4
-    FOREST_TRANSITIVE   = 8
-    CROSS_ORGANIZATION  = 16
-    WITHIN_FOREST       = 32
-    TREAT_AS_EXTERNAL   = 64
+    NON_TRANSITIVE                           = 1
+    UPLEVEL_ONLY                             = 2
+    FILTER_SIDS                              = 4
+    FOREST_TRANSITIVE                        = 8
+    CROSS_ORGANIZATION                       = 16
+    WITHIN_FOREST                            = 32
+    TREAT_AS_EXTERNAL                        = 64
+    USES_RC4_ENCRYPTION                      = 128
+    CROSS_ORGANIZATION_NO_TGT_DELEGATION     = 512
+    PIM_TRUST                                = 1024
+    CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION = 2048
 }
+
+$TrustDirectionEnum = psenum $Mod PowerView.TrustDirection UInt32 @{
+    DISABLED  = 0
+    INBOUND   = 1
+    OUTBOUND  = 2
+} -Bitfield
+
+$TrustAttributesEnum = psenum $Mod PowerView.TrustAttributes UInt32 @{
+    NON_TRANSITIVE                           = 1
+    UPLEVEL_ONLY                             = 2
+    FILTER_SIDS                              = 4
+    FOREST_TRANSITIVE                        = 8
+    CROSS_ORGANIZATION                       = 16
+    WITHIN_FOREST                            = 32
+    TREAT_AS_EXTERNAL                        = 64
+    USES_RC4_ENCRYPTION                      = 128
+    CROSS_ORGANIZATION_NO_TGT_DELEGATION     = 512
+    PIM_TRUST                                = 1024
+    CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION = 2048
+} -Bitfield
+
+
 
 # the DsEnumerateDomainTrusts result structure
 $DS_DOMAIN_TRUSTS = struct $Mod DS_DOMAIN_TRUSTS @{
