@@ -2671,9 +2671,9 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
     BEGIN {
         $Null = [Reflection.Assembly]::LoadWithPartialName('System.IdentityModel')
 
-        if ($PSBoundParameters['Credential']) {
-            $LogonToken = Invoke-UserImpersonation -Credential $Credential
-        }
+        #if ($PSBoundParameters['Credential']) {
+        #    $LogonToken = Invoke-UserImpersonation -Credential $Credential
+        #}
     }
 
     PROCESS {
@@ -2702,7 +2702,13 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
             }
 
             try {
-                $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $UserSPN
+                if ($PSBoundParameters['Credential']) {
+                    $NetworkCredential = $Credential.GetNetworkCredential()
+                    $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $UserSPN,'Impersonation',$NetworkCredential,$UserSPN
+                }
+                else {
+                    $Ticket = New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList $UserSPN
+                }
             }
             catch {
                 Write-Warning "[Get-DomainSPNTicket] Error requesting ticket for SPN '$UserSPN' from user '$DistinguishedName' : $_"
@@ -2935,14 +2941,16 @@ Outputs a custom object containing the SamAccountName, ServicePrincipalName, and
         if ($PSBoundParameters['Tombstone']) { $UserSearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $UserSearcherArguments['Credential'] = $Credential }
 
-        if ($PSBoundParameters['Credential']) {
-            $LogonToken = Invoke-UserImpersonation -Credential $Credential
-        }
+        #if ($PSBoundParameters['Credential']) {
+        #    $LogonToken = Invoke-UserImpersonation -Credential $Credential
+        #}
+        $KerberoastArguments = @{}
+        if ($PSBoundParameters['Credential']) { $KerberoastArguments['Credential'] = $Credential }
     }
 
     PROCESS {
         if ($PSBoundParameters['Identity']) { $UserSearcherArguments['Identity'] = $Identity }
-        Get-DomainUser @UserSearcherArguments | Where-Object {$_.samaccountname -ne 'krbtgt'} | Get-DomainSPNTicket -OutputFormat $OutputFormat
+        Get-DomainUser @UserSearcherArguments | Where-Object {$_.samaccountname -ne 'krbtgt'} | Get-DomainSPNTicket -OutputFormat $OutputFormat @KerberoastArguments
     }
 
     END {
@@ -3176,7 +3184,7 @@ A custom PSObject with LDAP hashtable properties translated.
         #'pkiexpirationperiod'
     )
 
-    $ObjectProperties = @{}
+    $ObjectProperties = [ordered]@{}
 
     $Properties.keys | Sort-Object | ForEach-Object {
         if ($_ -ne 'adspath') {
@@ -3229,6 +3237,122 @@ A custom PSObject with LDAP hashtable properties translated.
             }
             elseif ($_ -eq 'trustdirection') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $TrustDirectionEnum
+            }
+            elseif ($_ -eq 'dsheuristics') {
+                $tmp = [ordered]@{}
+                $dsheuristics = $Properties[$_][0].ToCharArray()
+                for ($i = 0; $i -lt $dsheuristics.Count; $i++) {
+                    switch ($i + 1) {
+                        1 {
+                            $tmp["SupFirstLastANR"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["SupFirstLastANR"] = $false
+                            }
+                        }
+                        2 {
+                            $tmp["SupLastFirstANR"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["SupLastFirstANR"] = $false
+                            }
+                        }
+                        3 {
+                           $tmp["DoListObject"] = $false
+                            if ($dsheuristics[$i] -eq "1") {
+                                $tmp["DoListObject"] = $true
+                            } 
+                        }
+                        4 {
+                           $tmp["DoNickRes"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["DoNickRes"] = $false
+                            } 
+                        }
+                        5 {
+                           $tmp["LDAPUsePermMod"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["LDAPUsePermMod"] = $false
+                            } 
+                        }
+                        6 {
+                           $tmp["HideDSID"] = "Never"
+                            if ($dsheuristics[$i] -eq "1") {
+                                $tmp["lHideDSID"] = "ErrorNotName"
+                            }
+                            elseif ($dsheuristics[$i] -ne "1" -and $dsheuristics[$i] -ne "0") {
+                                $tmp["lHideDSID"] = "Always"
+                            }
+                        }
+                        7 {
+                           $tmp["LDAPBlockAnonOps"] = $true
+                            if ($dsheuristics[$i] -eq "2") {
+                                $tmp["LDAPBlockAnonOps"] = $false
+                            } 
+                        }
+                        8 {
+                           $tmp["AllowAnonNSPI"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["AllowAnonNSPI"] = $false
+                            }
+                        }
+                        9 {
+                           $tmp["UserPwdSupport"] = $true
+                            if ($dsheuristics[$i] -eq "2") {
+                                $tmp["UserPwdSupport"] = $false
+                            }
+                            elseif ($dsheuristics[$i] -eq "0") {
+                                $tmp["UserPwdSupport"] = "AD DS: false; AD LDS: true"
+                            }
+                        }
+                        10 {
+                           $tmp["tenthChar"] = $false
+                            if ($dsheuristics[$i] -eq "1") {
+                                $tmp["tenthChar"] = $true
+                            }
+                        }
+                        11 {
+                           $tmp["SpecifyGUIDOnAdd"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["SpecifyGUIDOnAdd"] = $false
+                            }
+                        }
+                        12 {
+                           $tmp["DontStandardizeSDs"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["DontStandardizeSDs"] = $false
+                            }
+                        }
+                        13 {
+                           $tmp["AllowPasswordOperationsOverNonSecureConnection"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["AllowPasswordOperationsOverNonSecureConnection"] = $false
+                            }
+                        }
+                        14 {
+                           $tmp["DontPropagateOnNoChangeUpdate"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["DontPropagateOnNoChangeUpdate"] = $false
+                            }
+                        }
+                        15 {
+                           $tmp["ComputeANRStats"] = $true
+                            if ($dsheuristics[$i] -eq "0") {
+                                $tmp["ComputeANRStats"] = $false
+                            }
+                        }
+                        16 {
+                           $opFlag = [Convert]::ToInt32($dsheuristics[$i], 16)
+                           $exGroups = @()
+                           foreach ($key in $dSHeuristicsExcludeOps.keys){
+                               if ($opFlag -band $key){
+                                   $exGroups += $dSHeuristicsExcludeOps[$key]
+                               }
+                           }
+                           $tmp["AdminSDExMask"] = $exGroups -join ", "
+                        }
+                        # more
+                    }
+                }
+                $ObjectProperties[$_] = New-Object -TypeName PSObject -Property $tmp
             }
             elseif ($_ -eq 'ntsecuritydescriptor') {
                 # $ObjectProperties[$_] = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $Properties[$_][0], 0
@@ -4428,8 +4552,19 @@ to the forest root domain SID.
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server
     )
+
+    BEGIN {
+        $SearchArguments = @{}
+        if ($PSBoundParameters['Credential']) { $SearchArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['Server']) { $SearchArguments['Server'] = $Server }
+    }
 
     PROCESS {
         if ($PSBoundParameters['Credential']) {
@@ -4472,12 +4607,7 @@ to the forest root domain SID.
 
         if ($ForestObject) {
             # get the SID of the forest root
-            if ($PSBoundParameters['Credential']) {
-                $ForestSid = (Get-DomainUser -Identity "krbtgt" -Domain $ForestObject.RootDomain.Name -Credential $Credential).objectsid
-            }
-            else {
-                $ForestSid = (Get-DomainUser -Identity "krbtgt" -Domain $ForestObject.RootDomain.Name).objectsid
-            }
+            $ForestSid = (Get-DomainUser -Identity "krbtgt" -Domain $ForestObject.RootDomain.Name -Properties objectsid @SearchArguments).objectsid
 
             $Parts = $ForestSid -Split '-'
             $ForestSid = $Parts[0..$($Parts.length-2)] -join '-'
@@ -6259,6 +6389,7 @@ http://blogs.technet.com/b/ashleymcglone/archive/2013/03/25/active-directory-ou-
 
     $ForestArguments = @{}
     if ($PSBoundParameters['Credential']) { $ForestArguments['Credential'] = $Credential }
+    if ($PSBoundParameters['Server']) { $ForestArguments['Server'] = $Server }
     $DomainDNArguments = @{}
     if ($PSBoundParameters['Domain']) { $DomainDNArguments['Domain'] = $Domain }
     if ($PSBoundParameters['Server']) { $DomainDNArguments['Server'] = $Server }
@@ -25667,6 +25798,7 @@ $TrustDirectionEnum = psenum $Mod PowerView.TrustDirection UInt32 @{
     INBOUND   = 1
     OUTBOUND  = 2
 } -Bitfield
+$global:TrustDirectionEnum = $TrustDirectionEnum
 
 $TrustAttributesEnum = psenum $Mod PowerView.TrustAttributes UInt32 @{
     NON_TRANSITIVE                           = 1
@@ -25681,7 +25813,14 @@ $TrustAttributesEnum = psenum $Mod PowerView.TrustAttributes UInt32 @{
     PIM_TRUST                                = 1024
     CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION = 2048
 } -Bitfield
+$global:TrustAttributesEnum = $TrustAttributesEnum
 
+$dSHeuristicsExcludeOps = @{
+    1 = "Account"
+    2 = "Server"
+    4 = "Print"
+    8 = "Backup"
+}
 
 
 # the DsEnumerateDomainTrusts result structure
