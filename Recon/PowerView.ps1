@@ -3220,9 +3220,9 @@ A custom PSObject with LDAP hashtable properties translated.
             elseif ($_ -eq 'mspki-certificate-name-flag') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $CertNameFlagEnum
             }
-            elseif ($_ -eq 'flags') {
+            <#elseif ($_ -eq 'flags') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $CertFlagsEnum
-            }
+            }#>
             elseif ($_ -eq 'mspki-enrollment-flag') {
                 $ObjectProperties[$_] = $Properties[$_][0] -as $CertEnrollmentFlagEnum
             }
@@ -25413,6 +25413,380 @@ String
         }
         Write-Verbose "[Get-TargetDomainName] Using domain name $($TargetDomain)"
         $TargetDomain
+    }
+}
+
+function Get-DomainGPOStatus {
+<#
+.SYNOPSIS
+
+Return information for all linked GPOs for all (or specified) OUs in AD.
+
+Author: Charlie Clark (@exploitph)  
+License: BSD 3-Clause  
+Required Dependencies: Get-DomainSearcher, Convert-LDAPProperty, Convert-ADName, Get-DomainObject
+
+.DESCRIPTION
+
+Builds a directory searcher object using Get-DomainSearcher, builds a custom
+LDAP filter based on targeting/filter parameters, and searches for all objects
+matching the criteria. To only return specific properties, use
+"-Properties samaccountname,usnchanged,...". By default, all objects for
+the current domain are returned.
+
+.PARAMETER Identity
+
+A DistinguishedName (e.g. OU=Test,DC=testlab,DC=local).
+Wildcards accepted.
+
+.PARAMETER Domain
+
+Specifies the domain to use for the query, defaults to the current domain.
+
+.PARAMETER LDAPFilter
+
+Specifies an LDAP query string that is used to filter Active Directory objects.
+
+.PARAMETER SearchBase
+
+The LDAP source to search through, e.g. "LDAP://OU=secret,DC=testlab,DC=local"
+Useful for OU queries.
+
+.PARAMETER Server
+
+Specifies an Active Directory server (domain controller) to bind to.
+
+.PARAMETER SearchScope
+
+Specifies the scope to search under, Base/OneLevel/Subtree (default of Subtree).
+
+.PARAMETER ResultPageSize
+
+Specifies the PageSize to set for the LDAP searcher object.
+
+.PARAMETER ServerTimeLimit
+
+Specifies the maximum amount of time the server spends searching. Default of 120 seconds.
+
+.PARAMETER Credential
+
+A [Management.Automation.PSCredential] object of alternate credentials
+for connection to the target domain.
+
+.PARAMETER Raw
+
+Switch. Return raw results instead of translating the fields into a custom PSObject.
+
+.PARAMETER SSL
+
+Switch. Use SSL for the connection to the LDAP server.
+
+.PARAMETER Obfuscate
+
+Switch. Obfuscate the resulting LDAP filter string using hex encoding.
+
+.PARAMETER Certificate
+
+Certificate to authenticate to LDAP with.
+
+.PARAMETER CertPassword
+
+Password for certificate being used to authentication to LDAP with.
+
+.EXAMPLE
+
+Get-DomainObject -Domain testlab.local
+
+Return all objects for the testlab.local domain
+
+.EXAMPLE
+
+'S-1-5-21-890171859-3433809279-3366196753-1003', 'CN=dfm,CN=Users,DC=testlab,DC=local','b6a9a2fb-bbd5-4f28-9a09-23213cea6693','dfm.a' | Get-DomainObject -Properties distinguishedname
+
+distinguishedname
+-----------------
+CN=PRIMARY,OU=Domain Controllers,DC=testlab,DC=local
+CN=dfm,CN=Users,DC=testlab,DC=local
+OU=OU3,DC=testlab,DC=local
+CN=dfm (admin),CN=Users,DC=testlab,DC=local
+
+.EXAMPLE
+
+$SecPassword = ConvertTo-SecureString 'Password123!' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('TESTLAB\dfm.a', $SecPassword)
+Get-DomainObject -Credential $Cred -Identity 'windows1'
+
+.EXAMPLE
+
+Get-Domain | Select-Object -Expand name
+testlab.local
+
+'testlab\harmj0y','DEV\Domain Admins' | Get-DomainObject -Verbose -Properties distinguishedname
+VERBOSE: [Get-DomainSearcher] search string: LDAP://PRIMARY.testlab.local/DC=testlab,DC=local
+VERBOSE: [Get-DomainUser] Extracted domain 'testlab.local' from 'testlab\harmj0y'
+VERBOSE: [Get-DomainSearcher] search string: LDAP://PRIMARY.testlab.local/DC=testlab,DC=local
+VERBOSE: [Get-DomainObject] Get-DomainObject filter string: (&(|(samAccountName=harmj0y)))
+
+distinguishedname
+-----------------
+CN=harmj0y,CN=Users,DC=testlab,DC=local
+VERBOSE: [Get-DomainUser] Extracted domain 'dev.testlab.local' from 'DEV\Domain Admins'
+VERBOSE: [Get-DomainSearcher] search string: LDAP://PRIMARY.testlab.local/DC=dev,DC=testlab,DC=local
+VERBOSE: [Get-DomainObject] Get-DomainObject filter string: (&(|(samAccountName=Domain Admins)))
+CN=Domain Admins,CN=Users,DC=dev,DC=testlab,DC=local
+
+.OUTPUTS
+
+PowerView.ADObject
+
+Custom PSObject with translated AD object property fields.
+
+PowerView.ADObject.Raw
+
+The raw DirectoryServices.SearchResult object, if -Raw is enabled.
+#>
+
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '')]
+    [OutputType('PowerView.ADObject')]
+    [OutputType('PowerView.ADObject.Raw')]
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, ValueFromPipeline = $True, ValueFromPipelineByPropertyName = $True)]
+        [Alias('DistinguishedName')]
+        [String[]]
+        $Identity,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Domain,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('Filter')]
+        [String]
+        $LDAPFilter,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('ADSPath')]
+        [String]
+        $SearchBase,
+
+        [ValidateNotNullOrEmpty()]
+        [Alias('DomainController')]
+        [String]
+        $Server,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ResultPageSize = 200,
+
+        [ValidateRange(1, 10000)]
+        [Int]
+        $ServerTimeLimit,
+
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Switch]
+        $Raw,
+
+        [Switch]
+        $SSL,
+
+        [Switch]
+        $Obfuscate,
+
+        [String]
+        $Certificate,
+
+        [String]
+        $CertPassword
+    )
+
+    DynamicParam {
+        $UACValueNames = [Enum]::GetNames($UACEnum)
+        # add in the negations
+        $UACValueNames = $UACValueNames | ForEach-Object {$_; "NOT_$_"}
+        # create new dynamic parameter
+        New-DynamicParameter -Name UACFilter -ValidateSet $UACValueNames -Type ([array])
+    }
+
+    BEGIN {
+        $SearcherArguments = @{}
+        if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
+        if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
+        if ($PSBoundParameters['ResultPageSize']) { $SearcherArguments['ResultPageSize'] = $ResultPageSize }
+        if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
+        if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
+        if ($PSBoundParameters['SSL']) { $SearcherArguments['SSL'] = $SSL }
+        if ($PSBoundParameters['Obfuscate']) {$SearcherArguments['Obfuscate'] = $Obfuscate }
+        if ($PSBoundParameters['Certificate']) {$SearcherArguments['Certificate'] = $Certificate }
+        if ($PSBoundParameters['CertPassword']) {$SearcherArguments['CertPassword'] = $CertPassword }
+        $GPOArguments = $SearcherArguments.Clone()
+        if ($PSBoundParameters['SearchBase']) { $SearcherArguments['SearchBase'] = $SearchBase }
+        if ($PSBoundParameters['SearchScope']) { $SearcherArguments['SearchScope'] = $SearchScope }
+        $SearcherArguments['Properties'] = "gplink","name","distinguishedname"
+        $GPOArguments['Properties'] = "displayname","distinguishedname","flags"
+    }
+
+    PROCESS {
+        #bind dynamic parameter to a friendly variable
+        if ($PSBoundParameters -and ($PSBoundParameters.Count -ne 0)) {
+            New-DynamicParameter -CreateVariables -BoundParameters $PSBoundParameters
+        }
+        $IdentityFilter = ''
+        $Filter = ''
+        $Identity | Where-Object {$_} | ForEach-Object {
+            $IdentityInstance = $_.Replace('(', '\28').Replace(')', '\29')
+            if ($IdentityInstance -match '^S-1-') {
+                $IdentityFilter += "(objectsid=$IdentityInstance)"
+            }
+            elseif ($IdentityInstance -match '^(CN|OU|DC)=') {
+                $IdentityFilter += "(distinguishedname=$IdentityInstance)"
+                if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
+                    # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
+                    #   and rebuild the domain searcher
+                    $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
+                    Write-Verbose "[Get-DomainGPOStatus] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
+                    $SearcherArguments['Domain'] = $IdentityDomain
+                }
+            }
+            elseif ($IdentityInstance -imatch '^[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}$') {
+                $GuidByteString = (([Guid]$IdentityInstance).ToByteArray() | ForEach-Object { '\' + $_.ToString('X2') }) -join ''
+                Write-Output "$GuidByteString"
+                $IdentityFilter += "(objectguid=$GuidByteString)"
+            }
+            elseif ($IdentityInstance.Contains('\')) {
+                $ConvertedIdentityInstance = $IdentityInstance.Replace('\28', '(').Replace('\29', ')') | Convert-ADName -OutputType Canonical
+                if ($ConvertedIdentityInstance) {
+                    $ObjectDomain = $ConvertedIdentityInstance.SubString(0, $ConvertedIdentityInstance.IndexOf('/'))
+                    $ObjectName = $IdentityInstance.Split('\')[1]
+                    $IdentityFilter += "(samAccountName=$ObjectName)"
+                    $SearcherArguments['Domain'] = $ObjectDomain
+                    Write-Verbose "[Get-DomainGPOStatus] Extracted domain '$ObjectDomain' from '$IdentityInstance'"
+                }
+            }
+            elseif ($IdentityInstance.Contains('.')) {
+                $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(dnshostname=$IdentityInstance))"
+            }
+            else {
+                $IdentityFilter += "(|(samAccountName=$IdentityInstance)(name=$IdentityInstance)(displayname=$IdentityInstance))"
+            }
+        }
+        if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
+            $Filter += "(|$IdentityFilter)"
+        }
+        if ($PSBoundParameters['LDAPFilter']) {
+            Write-Verbose "[Get-DomainGPOStatus] Using additional LDAP filter: $LDAPFilter"
+            $Filter += "$LDAPFilter"
+        }
+
+        if ($Filter -and $Filter -ne '') {
+            $SearcherArguments['LDAPFilter'] = "(&$Filter)"
+        }
+        Write-Verbose "[Get-DomainGPOStatus] Get-DomainObject filter string: $($Filter)"
+            
+        $Results = Get-DomainObject @SearcherArguments
+        $Results | Where-Object {$_} | ForEach-Object {
+            $OU = $_
+
+            $OUObject = New-Object PSObject -Property @{
+                DistinguishedName = $OU.distinguishedname
+                Name = $OU.name
+                GPLinks = @()
+            }
+
+            $GPLinks = $OU.gplink.Split("[]")
+            $Count = 1
+            $GPOut = @{}
+            foreach ($GPLink in $GPLinks) {
+                if ($GPLink) {
+                    $GPDN = $GPLink.Split('/')[-1].Split(';')[0]
+                    $GPStatus = $GPLink.Split(';')[1]
+                    $GPPosition = $Count++
+
+                    $GPOArguments['LDAPFilter'] = "(distinguishedname=$GPDN)"
+                    $GPResult = Get-DomainObject @GPOArguments
+                    if (-not $GPResult) {
+                        Write-Verbose "[Get-DomainGPOStatus] Unable to get GPO from LDAP"
+                    }
+                    else {
+                        $GPDN = $GPResult.distinguishedname
+                        $GPName = $GPResult.displayname
+                        $GPFlags = $GPResult.flags
+                    }
+
+                    if ($GPStatus -eq 0) {
+                        $LinkEnabled = $true
+                        $Enforced = $false
+                    }
+                    elseif ($GPStatus -eq 1) {
+                        $LinkEnabled = $false
+                        $Enforced = $false
+                    }
+                    elseif ($GPStatus -eq 2) {
+                        $LinkEnabled = $true
+                        $Enforced = $true
+                    }
+                    elseif ($GPStatus -eq 3) {
+                        $LinkEnabled = $false
+                        $Enforced = $true
+                    }
+
+                    if ($GPFlags -eq 0) {
+                        $Computer = $true
+                        $User = $true
+                    }
+                    elseif ($GPFlags -eq 1) {
+                        $Computer = $true
+                        $User = $false
+                    }
+                    elseif ($GPFlags -eq 2) {
+                        $Computer = $false
+                        $User = $true
+                    }
+                    elseif ($GPFlags -eq 3) {
+                        $Computer = $false
+                        $User = $false
+                    }
+
+                    $GPOut[$GPPosition] = @{
+                        "DistinguishedName" = $GPDN
+                        "Name" = $GPName
+                        "LinkEnabled" = $LinkEnabled
+                        "Enforced" = $Enforced
+                        "ComputerEnabled" = $Computer
+                        "UserEnabled" = $User
+                    }
+                }
+            }
+
+            $Count = 1
+            $GPOut.Keys | Sort-Object -Descending | ForEach-Object {
+                $GPObject = New-Object PSObject -Property @{
+                    Priority = $Count++
+                    DistinguishedName = $GPOut[$_].DistinguishedName
+                    Name = $GPOut[$_].Name
+                    LinkEnabled = $GPOut[$_].LinkEnabled
+                    Enforced = $GPOut[$_].Enforced
+                    ComputerEnabled = $GPOut[$_].ComputerEnabled
+                    UserEnabled = $GPOut[$_].UserEnabled
+                }
+                $OUObject.GPLinks += $GPObject
+            }
+
+            $OUObject
+        }
+        if ($Results -and -not $PSBoundParameters['SSL'] -and -not $PSBoundParameters['Certificate']) {
+            try { $Results.dispose() }
+            catch {
+                Write-Verbose "[Get-DomainGPOStatus] Error disposing of the Results object: $_"
+            }
+        }
     }
 }
 
