@@ -25700,83 +25700,85 @@ The raw DirectoryServices.SearchResult object, if -Raw is enabled.
                 GPLinks = @()
             }
 
-            $GPLinks = $OU.gplink.Split("[]")
-            $Count = 1
-            $GPOut = @{}
-            foreach ($GPLink in $GPLinks) {
-                if ($GPLink) {
-                    $GPDN = $GPLink.Split('/')[-1].Split(';')[0]
-                    $GPStatus = $GPLink.Split(';')[1]
-                    $GPPosition = $Count++
+            if ($OU.gplink) {
+                $GPLinks = $OU.gplink.Split("[]")
+                $Count = 1
+                $GPOut = @{}
+                foreach ($GPLink in $GPLinks) {
+                    if ($GPLink) {
+                        $GPDN = $GPLink.Split('/')[-1].Split(';')[0]
+                        $GPStatus = $GPLink.Split(';')[1]
+                        $GPPosition = $Count++
 
-                    $GPOArguments['LDAPFilter'] = "(distinguishedname=$GPDN)"
-                    $GPResult = Get-DomainObject @GPOArguments
-                    if (-not $GPResult) {
-                        Write-Verbose "[Get-DomainGPOStatus] Unable to get GPO from LDAP"
-                    }
-                    else {
-                        $GPDN = $GPResult.distinguishedname
-                        $GPName = $GPResult.displayname
-                        $GPFlags = $GPResult.flags
-                    }
+                        $GPOArguments['LDAPFilter'] = "(distinguishedname=$GPDN)"
+                        $GPResult = Get-DomainObject @GPOArguments
+                        if (-not $GPResult) {
+                            Write-Verbose "[Get-DomainGPOStatus] Unable to get GPO from LDAP"
+                        }
+                        else {
+                            $GPDN = $GPResult.distinguishedname
+                            $GPName = $GPResult.displayname
+                            $GPFlags = $GPResult.flags
+                        }
 
-                    if ($GPStatus -eq 0) {
-                        $LinkEnabled = $true
-                        $Enforced = $false
-                    }
-                    elseif ($GPStatus -eq 1) {
-                        $LinkEnabled = $false
-                        $Enforced = $false
-                    }
-                    elseif ($GPStatus -eq 2) {
-                        $LinkEnabled = $true
-                        $Enforced = $true
-                    }
-                    elseif ($GPStatus -eq 3) {
-                        $LinkEnabled = $false
-                        $Enforced = $true
-                    }
+                        if ($GPStatus -eq 0) {
+                            $LinkEnabled = $true
+                            $Enforced = $false
+                        }
+                        elseif ($GPStatus -eq 1) {
+                            $LinkEnabled = $false
+                            $Enforced = $false
+                        }
+                        elseif ($GPStatus -eq 2) {
+                            $LinkEnabled = $true
+                            $Enforced = $true
+                        }
+                        elseif ($GPStatus -eq 3) {
+                            $LinkEnabled = $false
+                            $Enforced = $true
+                        }
 
-                    if ($GPFlags -eq 0) {
-                        $Computer = $true
-                        $User = $true
-                    }
-                    elseif ($GPFlags -eq 1) {
-                        $Computer = $true
-                        $User = $false
-                    }
-                    elseif ($GPFlags -eq 2) {
-                        $Computer = $false
-                        $User = $true
-                    }
-                    elseif ($GPFlags -eq 3) {
-                        $Computer = $false
-                        $User = $false
-                    }
+                        if ($GPFlags -eq 0) {
+                            $Computer = $true
+                            $User = $true
+                        }
+                        elseif ($GPFlags -eq 1) {
+                            $Computer = $true
+                            $User = $false
+                        }
+                        elseif ($GPFlags -eq 2) {
+                            $Computer = $false
+                            $User = $true
+                        }
+                        elseif ($GPFlags -eq 3) {
+                            $Computer = $false
+                            $User = $false
+                        }
 
-                    $GPOut[$GPPosition] = @{
-                        "DistinguishedName" = $GPDN
-                        "Name" = $GPName
-                        "LinkEnabled" = $LinkEnabled
-                        "Enforced" = $Enforced
-                        "ComputerEnabled" = $Computer
-                        "UserEnabled" = $User
+                        $GPOut[$GPPosition] = @{
+                            "DistinguishedName" = $GPDN
+                            "Name" = $GPName
+                            "LinkEnabled" = $LinkEnabled
+                            "Enforced" = $Enforced
+                            "ComputerEnabled" = $Computer
+                            "UserEnabled" = $User
+                        }
                     }
                 }
-            }
 
-            $Count = 1
-            $GPOut.Keys | Sort-Object -Descending | ForEach-Object {
-                $GPObject = New-Object PSObject -Property @{
-                    Priority = $Count++
-                    DistinguishedName = $GPOut[$_].DistinguishedName
-                    Name = $GPOut[$_].Name
-                    LinkEnabled = $GPOut[$_].LinkEnabled
-                    Enforced = $GPOut[$_].Enforced
-                    ComputerEnabled = $GPOut[$_].ComputerEnabled
-                    UserEnabled = $GPOut[$_].UserEnabled
+                $Count = 1
+                $GPOut.Keys | Sort-Object -Descending | ForEach-Object {
+                    $GPObject = New-Object PSObject -Property @{
+                        Priority = $Count++
+                        DistinguishedName = $GPOut[$_].DistinguishedName
+                        Name = $GPOut[$_].Name
+                        LinkEnabled = $GPOut[$_].LinkEnabled
+                        Enforced = $GPOut[$_].Enforced
+                        ComputerEnabled = $GPOut[$_].ComputerEnabled
+                        UserEnabled = $GPOut[$_].UserEnabled
+                    }
+                    $OUObject.GPLinks += $GPObject
                 }
-                $OUObject.GPLinks += $GPObject
             }
 
             $OUObject
