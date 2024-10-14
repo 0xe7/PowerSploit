@@ -3391,6 +3391,9 @@ A custom PSObject with LDAP hashtable properties translated.
                     $ObjectProperties[$_] = [datetime]::fromfiletime($Properties[$_][0])
                 }
             }
+			elseif ($_ -eq "msds-supportedencryptiontypes") {
+                $ObjectProperties[$_] = [SupportedEncryptionTypesEnum]$Properties[$_][0]
+            }
             elseif ($DateTimeAttrs -contains $_) {
                 # convert timestamps
                 if ($Properties[$_][0] -is [System.MarshalByRefObject]) {
@@ -3608,7 +3611,10 @@ System.DirectoryServices.DirectorySearcher
         $CertPassword,
 
         [Switch]
-        $RootDSE
+        $RootDSE,
+		
+		[Switch]
+		$Anonymous
     )
 
     BEGIN {
@@ -3685,6 +3691,10 @@ System.DirectoryServices.DirectorySearcher
             if ($PSBoundParameters['Credential'] -and -not $PSBoundParameters['Certificate']) {
                 $Searcher.Bind($Credential)
             }
+			elseif ($PSBoundParameters['Anonymous']) {
+				$Searcher.Credential = $null
+				$Searcher.Bind()
+			}
             else {
                 $Searcher.Bind()
             }
@@ -25845,12 +25855,16 @@ String
 
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
-        $Credential = [Management.Automation.PSCredential]::Empty
+        $Credential = [Management.Automation.PSCredential]::Empty,
+		
+		[Switch]
+		$Anonymous
     )
 
     BEGIN {
         $SearcherArguments = @{
             'RootDSE' = $True
+			'Anonymous' = $Anonymous
         }
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $SearcherArguments['Server'] = $Server }
@@ -26190,6 +26204,16 @@ $TrustAttributesEnum = psenum $Mod PowerView.TrustAttributes UInt32 @{
     CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION = 2048
 } -Bitfield
 $global:TrustAttributesEnum = $TrustAttributesEnum
+
+[Flags()] enum SupportedEncryptionTypesEnum
+{
+    NONE = 0
+    DES_CBC_CRC = 1
+    DES_CBC_MD5 = 2
+    RC4 = 4
+    AES_128 = 8
+    AES_256 = 16
+}
 
 $dSHeuristicsExcludeOps = @{
     1 = "Account"
