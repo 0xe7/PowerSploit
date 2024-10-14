@@ -3692,7 +3692,7 @@ System.DirectoryServices.DirectorySearcher
                 $Searcher.Bind($Credential)
             }
 			elseif ($PSBoundParameters['Anonymous']) {
-				$Searcher.Credential = $null
+				$Searcher.AuthType = [System.DirectoryServices.Protocols.AuthType]::Anonymous
 				$Searcher.Bind()
 			}
             else {
