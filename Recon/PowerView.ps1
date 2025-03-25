@@ -25858,7 +25858,10 @@ String
         $Credential = [Management.Automation.PSCredential]::Empty,
 		
 		[Switch]
-		$Anonymous
+		$Anonymous,
+		
+		[Switch]
+		$Raw
     )
 
     BEGIN {
@@ -25880,7 +25883,11 @@ String
 
         $Response = $Searcher.SendRequest($Request)
 
-        Convert-LdapConnectionAttributes -Attributes $Response.Entries[0].Attributes
+		if ($PSBoundParameters['Raw']) {
+			$Response
+		} else {
+			Convert-LdapConnectionAttributes -Attributes $Response.Entries[0].Attributes
+		}
     }
 }
 
